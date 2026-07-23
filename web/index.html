@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rockfield AccessForecast — Conditional Access enforcement preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://alcdn.msftauth.net/browser/2.38.4/js/msal-browser.min.js"></script>
+<style>
+  :root{
+    --blue:#195BA8; --blue-d:#12467f; --orange:#E47834; --slate:#5D686E;
+    --lgrey:#E6E7E8; --ok:#2E7D4F; --warn:#E47834; --bad:#C0392B;
+    --ink:#1c2226; --card:#fff; --line:#dfe3e6;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:'Poppins','Segoe UI',Helvetica,Arial,sans-serif;color:var(--ink);
+    background:#f4f6f8;line-height:1.45;font-size:15px}
+  header{background:#fff;border-bottom:3px solid var(--blue);padding:14px 26px;display:flex;
+    align-items:center;gap:18px;flex-wrap:wrap}
+  header svg{height:38px;width:auto}
+  header .title{font-weight:600;font-size:18px;color:var(--blue);letter-spacing:.2px}
+  header .title span{color:var(--orange)}
+  header .sub{color:var(--slate);font-size:13px;margin-left:auto}
+  main{max-width:1180px;margin:0 auto;padding:26px}
+  h2{font-weight:600;color:var(--blue);font-size:17px;margin:30px 0 12px;border-bottom:1px solid var(--line);padding-bottom:6px}
+  .muted{color:var(--slate)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  label.fld{display:flex;flex-direction:column;gap:4px;font-size:12.5px;color:var(--slate);font-weight:500}
+  input[type=text],select{font-family:inherit;font-size:14px;padding:9px 11px;border:1px solid var(--line);border-radius:8px;min-width:220px}
+  button{font-family:inherit;font-weight:500;border:0;border-radius:8px;padding:10px 16px;cursor:pointer;font-size:14px}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .btn-primary{background:var(--blue);color:#fff}
+  .btn-primary:hover:not(:disabled){background:var(--blue-d)}
+  .btn-ghost{background:#fff;color:var(--blue);border:1px solid var(--blue)}
+  .btn-orange{background:var(--orange);color:#fff}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:16px;text-align:center;flex:1;min-width:260px;background:#fbfcfd}
+  .drop strong{color:var(--blue)}
+  .drop.set{border-color:var(--ok);background:#f2faf5}
+  .verdict{border-radius:10px;padding:16px 20px;font-weight:600;font-size:16px;margin-bottom:18px;color:#fff}
+  .verdict.hold{background:var(--bad)} .verdict.ready{background:var(--ok)}
+  .verdict small{display:block;font-weight:400;font-size:13px;opacity:.92;margin-top:4px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .tile{background:#fff;border:1px solid var(--line);border-left:4px solid var(--blue);border-radius:8px;padding:12px 14px}
+  .tile.bad{border-left-color:var(--bad)} .tile.warn{border-left-color:var(--orange)} .tile.ok{border-left-color:var(--ok)}
+  .tile .n{font-size:26px;font-weight:700;color:var(--ink)}
+  .tile .l{font-size:12px;color:var(--slate);text-transform:uppercase;letter-spacing:.4px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--slate);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px}
+  tbody tr:hover{background:#fafbfc}
+  .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600}
+  .pill.block{background:#fbe9e7;color:var(--bad)}
+  .pill.challenge{background:#fdf0e6;color:var(--orange)}
+  .pill.safe{background:#eaf6ef;color:var(--ok)}
+  .tag{display:inline-block;background:var(--lgrey);color:var(--slate);border-radius:5px;padding:1px 7px;font-size:11.5px;margin:1px 2px}
+  .tag.legacy{background:#fbe9e7;color:var(--bad)}
+  .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+  .tabs button{background:#eef1f4;color:var(--slate);border-radius:20px;padding:7px 15px}
+  .tabs button.active{background:var(--blue);color:#fff}
+  .hidden{display:none}
+  .toolbar{display:flex;gap:10px;align-items:center;margin:8px 0 14px;flex-wrap:wrap}
+  .toolbar input[type=search]{padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-family:inherit;font-size:13px;min-width:220px}
+  footer{max-width:1180px;margin:10px auto 40px;padding:0 26px;color:var(--slate);font-size:12px}
+  code{background:var(--lgrey);padding:1px 5px;border-radius:4px;font-size:12.5px;word-break:break-all}
+  .status{margin-top:12px;font-size:13.5px;padding:10px 12px;border-radius:8px;background:#eef4fb;color:var(--blue-d);display:none}
+  .status.show{display:block}
+  .status.err{background:#fbe9e7;color:var(--bad)}
+  .status.ok{background:#eaf6ef;color:var(--ok)}
+  details.setup{margin-top:14px;border:1px solid var(--line);border-radius:8px;padding:10px 14px;background:#fbfcfd}
+  details.setup summary{cursor:pointer;color:var(--blue);font-weight:600}
+  details.setup ol{margin:10px 0;padding-left:20px}
+  details.setup li{margin:6px 0}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid #cdd7e3;border-top-color:var(--blue);border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <svg viewBox="352 310 582 150" xmlns="http://www.w3.org/2000/svg" aria-label="Rockfield IT Services"><defs><style>.cls-1{fill:#e47834}.cls-2{fill:#195ba8}</style></defs><polygon class="cls-1" points="669.652 372.77 703.565 372.77 703.565 365.578 669.652 365.578 669.652 343.917 705.074 343.917 705.074 336.549 661.928 336.549 661.928 398.781 669.652 398.781 669.652 372.77"/><rect class="cls-1" x="717.5037" y="336.54875" width="7.72368" height="62.14363"/><polygon class="cls-1" points="786.838 391.324 749.374 391.324 749.374 370.284 783.908 370.284 783.908 363.093 749.374 363.093 749.374 343.65 785.418 343.65 785.418 336.549 741.74 336.549 741.74 398.692 786.838 398.692 786.838 391.324"/><polygon class="cls-1" points="841.081 391.502 807.257 391.502 807.257 336.549 799.533 336.549 799.533 398.692 841.081 398.692 841.081 391.502"/><path class="cls-1" d="M887.55615,395.98458a25.55465,25.55465,0,0,0,9.85442-7.27957,32.5213,32.5213,0,0,0,5.548-10.12081,36.38778,36.38778,0,0,0,1.86435-11.67376,32.59351,32.59351,0,0,0-1.95315-11.23076,31.19248,31.19248,0,0,0-5.68173-9.72074,25.93541,25.93541,0,0,0-9.85442-6.92512,35.19485,35.19485,0,0,0-13.7598-2.57411H850.9358v62.23267h22.63807A34.46272,34.46272,0,0,0,887.55615,395.98458Zm-28.89668-52.0677h14.9144q11.27468,0,17.40044,6.7468a23.212,23.212,0,0,1,6.125,16.15772,25.60963,25.60963,0,0,1-5.99215,17.00055q-5.99254,7.14712-17.53327,7.14663h-14.9144Z"/><path class="cls-2" d="M418.65955,357.4073c0-4.966-3.28741-9.942-10.65151-9.942H390.16233v19.894H408.008C415.46209,367.3593,418.65955,362.3833,418.65955,357.4073Z"/><path class="cls-2" d="M358.34783,315.7607V419.65753H569.3989V336.54412h11.7206v26.279l23.62111-26.279H619.299v.35957L591.69106,366.6399l29.91606,31.345v.70939H607.13871l-26.00049-27.49826-.01622-.02415v.00708l-.0025-.00269v17.506l.0025.00366V453.2393l19.14569-33.58177H641.701v-.17978H927.65217V315.7607Zm75.13981,82.93363H419.54885l-18.11551-20.77342h-11.271v20.77342h-11.7206V336.4641c9.8521,0,19.7142.08,29.56631.08,14.64831.08977,22.37211,9.862,22.37211,20.60338,0,8.52321-3.90685,17.12643-15.71741,19.52441l18.8249,21.223Zm34.00282,1.41879c-21.8425,0-31.96441-15.71741-31.96441-32.04418,0-16.337,10.4816-32.76382,31.96441-32.76382,21.39286,0,32.04437,16.42679,31.86452,32.6738C499.18507,384.0459,489.323,400.11312,467.49046,400.11312Zm71.64268,0c-23.08156,0-32.85371-15.88719-32.94367-32.04418-.07995-16.24726,10.4816-32.76382,32.94367-32.76382a32.05419,32.05419,0,0,1,22.8117,9.50216l-7.81369,7.54425a21.31206,21.31206,0,0,0-14.998-5.85542c-15.008,0-21.48281,11.181-21.39291,21.57283.08,10.29156,6.03521,21.033,21.39291,21.033a22.83713,22.83713,0,0,0,15.61751-6.305l7.9936,8.08361C556.34934,397.18553,548.09594,400.11312,539.13314,400.11312ZM922.45638,414.282H644.299V320.95649h278.1574Z"/><path class="cls-2" d="M467.49046,345.9565c-14.64831,0-20.68346,11.81062-20.42366,22.28222.26981,10.2118,5.77535,21.133,20.42366,21.133,14.64825,0,20.15386-11.01121,20.3237-21.223C487.99407,357.67711,482.13871,345.9565,467.49046,345.9565Z"/></svg>
+  <div class="title">Access<span>Forecast</span></div>
+  <div class="sub">Conditional Access enforcement preview &middot; report-only what-if</div>
+</header>
+
+<main>
+  <div class="card" id="loader">
+    <p style="margin-top:0"><strong>What this does.</strong> Point it at a tenant whose Conditional Access policies are running in
+    <em>report-only</em> mode. It reads what Entra has already recorded against real sign-ins and flags every user, device, app and
+    action that would start being <strong>blocked</strong> the moment you switch those policies to <em>On</em>.</p>
+
+    <div class="tabs">
+      <button id="tab-live" class="active">Connect to tenant</button>
+      <button id="tab-upload">Upload Graph export</button>
+    </div>
+
+    <!-- LIVE CONNECT -->
+    <div id="pane-live">
+      <div class="row">
+        <label class="fld">App (client) ID
+          <input type="text" id="clientId" placeholder="your app registration's client ID" autocomplete="off">
+        </label>
+        <label class="fld">Client tenant (ID or domain)
+          <input type="text" id="tenant" placeholder="client.onmicrosoft.com  or  GUID">
+        </label>
+        <label class="fld">Window
+          <select id="days">
+            <option value="7" selected>Last 7 days</option>
+            <option value="14">Last 14 days</option>
+            <option value="30">Last 30 days (P2)</option>
+          </select>
+        </label>
+        <button class="btn-primary" id="connect">Connect &amp; analyse</button>
+      </div>
+      <div class="status" id="status"></div>
+
+      <details class="setup">
+        <summary>First-time setup — register the app (once)</summary>
+        <ol>
+          <li>Entra admin center → <b>App registrations</b> → <b>New registration</b>. Name it <code>Rockfield AccessForecast</code>.</li>
+          <li>Supported account types: <b>Accounts in any organizational directory</b> (multi-tenant, so it reaches your GDAP clients).</li>
+          <li>Platform: <b>Single-page application (SPA)</b>. Redirect URI — register <b>this exact page's address</b>:
+            <br><code id="redirectUri">(open this page over http/https to see its URI)</code></li>
+          <li>API permissions → Microsoft Graph → <b>Delegated</b>: <code>Policy.Read.All</code>, <code>AuditLog.Read.All</code>,
+            <code>Directory.Read.All</code>. Grant admin consent.</li>
+          <li>Copy the <b>Application (client) ID</b> into the field above. Each client tenant consents once (or via GDAP);
+            sign-in logs need Entra ID P1/P2 in that tenant.</li>
+        </ol>
+        <p class="muted" style="margin:6px 0 0">Read-only. Nothing is stored on a server; the token lives only in this browser tab.
+        Your Client ID is remembered locally on this device for convenience.</p>
+      </details>
+    </div>
+
+    <!-- UPLOAD FALLBACK -->
+    <div id="pane-upload" class="hidden">
+      <p class="muted">No connection? Drop the two Graph exports (JSON arrays, or full responses with a <code>value</code> array).
+      For a complete read, your sign-in export should include non-interactive + service-principal sign-ins, not just interactive.</p>
+      <div class="row">
+        <label class="drop" id="drop-pol"><strong>1 · Conditional Access policies</strong><br><span class="muted">/identity/conditionalAccess/policies</span><br><input type="file" accept=".json,application/json" id="file-pol"></label>
+        <label class="drop" id="drop-sign"><strong>2 · Sign-in logs</strong><br><span class="muted">/auditLogs/signIns (report-only window)</span><br><input type="file" accept=".json,application/json" id="file-sign"></label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn-primary" id="run">Run forecast</button>
+        <button class="btn-ghost" id="demo">Load demo data</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="report" class="hidden"></div>
+</main>
+
+<footer>
+  Rockfield IT Services — Colm Whelan t/a Rockfield IT Services. Read-only. Runs entirely in your browser; no sign-in data leaves
+  this page. Report-only results are read from <code>signIn.appliedConditionalAccessPolicies[].result</code>.
+</footer>
+
+<script type="module">
+/* ============================================================
+   Embedded analysis engine (mirror of engine/analyze.mjs, unit-tested).
+   ============================================================ */
+const REPORT_ONLY_STATE='enabledForReportingButNotEnforced';
+const IMPACT={BLOCK:'block',CHALLENGE:'challenge',NONE:'none'};
+function classifyResult(r){switch(r){case 'reportOnlyFailure':return IMPACT.BLOCK;case 'failure':return IMPACT.BLOCK;case 'reportOnlyInterrupted':return IMPACT.CHALLENGE;default:return IMPACT.NONE;}}
+function describeControls(c){if(!c||!c.length)return 'Grant controls not recorded';const m={block:'Block access',mfa:'Require MFA',compliantDevice:'Require compliant device',domainJoinedDevice:'Require Hybrid-joined device',approvedApplication:'Require approved client app',compliantApplication:'Require app protection policy',passwordChange:'Require password change'};return c.map(x=>m[String(x).toLowerCase()]||x).join(' AND ');}
+function grantLabel(policy){const b=policy?.grantControls?.builtInControls||[];if(b.length)return describeControls(b);const as=policy?.grantControls?.authenticationStrength?.displayName;if(as)return `Require authentication strength: ${as}`;if(policy?.sessionControls)return 'Session controls';return 'Grant controls not recorded';}
+function isLegacyAuth(c){if(!c)return false;return !['Browser','Mobile Apps and Desktop clients'].includes(c);}
+function analyze(policies,signIns,options={}){
+  const reportOnlyOnly=options.reportOnlyPoliciesOnly!==false;
+  const policyById=new Map();(policies||[]).forEach(p=>policyById.set(p.id,p));
+  const reportOnlyIds=new Set((policies||[]).filter(p=>p.state===REPORT_ONLY_STATE).map(p=>p.id));
+  const findings=[];
+  for(const s of signIns||[]){
+    for(const ap of (s.appliedConditionalAccessPolicies||[])){
+      const impact=classifyResult(ap.result); if(impact===IMPACT.NONE)continue;
+      const policy=policyById.get(ap.id);
+      const isRO=reportOnlyIds.has(ap.id)||(ap.result||'').startsWith('reportOnly');
+      if(reportOnlyOnly&&!isRO)continue;
+      const controls=ap.enforcedGrantControls||policy?.grantControls?.builtInControls||[];
+      const hardBlock=controls.map(c=>String(c).toLowerCase()).includes('block');
+      const authStrength=policy?.grantControls?.authenticationStrength?.displayName||null;
+      findings.push({signInId:s.id,when:s.createdDateTime,
+        userPrincipalName:s.userPrincipalName||s.userDisplayName||'(unknown user)',
+        userDisplayName:s.userDisplayName||null,
+        app:s.appDisplayName||s.resourceDisplayName||'(unknown app)',
+        resource:s.resourceDisplayName||null,
+        clientApp:s.clientAppUsed||'(unknown)',legacyAuth:isLegacyAuth(s.clientAppUsed),
+        ip:s.ipAddress||null,location:[s.location?.city,s.location?.countryOrRegion].filter(Boolean).join(', ')||null,
+        device:s.deviceDetail?.displayName||s.deviceDetail?.operatingSystem||null,
+        deviceCompliant:s.deviceDetail?.isCompliant??null,deviceManaged:s.deviceDetail?.isManaged??null,
+        os:s.deviceDetail?.operatingSystem||null,browser:s.deviceDetail?.browser||null,
+        policyId:ap.id,policyName:ap.displayName||policy?.displayName||ap.id,result:ap.result,
+        impact:hardBlock?IMPACT.BLOCK:impact,controls,
+        reason:controls.length?describeControls(controls):(authStrength?`Require authentication strength: ${authStrength}`:'Grant controls not recorded'),
+        signInErrorCode:s.status?.errorCode??null});
+    }
+  }
+  return {summary:buildSummary(policies||[],reportOnlyIds,findings,signIns||[]),
+    byUser:groupBy(findings,f=>f.userPrincipalName,'user'),
+    byApp:groupBy(findings,f=>f.app,'app'),
+    byPolicy:buildPolicyImpact(policies||[],reportOnlyIds,findings),
+    byClientApp:groupBy(findings,f=>f.clientApp,'clientApp'),
+    byDevice:groupBy(findings.filter(f=>f.device),f=>f.device,'device'),
+    byLocation:groupBy(findings.filter(f=>f.location),f=>f.location,'location'),
+    legacyAuth:buildLegacyAuthView(findings),findings};
+}
+function groupBy(findings,keyFn,keyName){const map=new Map();
+  for(const f of findings){const k=keyFn(f);if(!map.has(k))map.set(k,{[keyName]:k,total:0,blocked:0,challenged:0,users:new Set(),apps:new Set(),policies:new Set(),clientApps:new Set(),firstSeen:f.when,lastSeen:f.when});
+    const g=map.get(k);g.total++;f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;g.users.add(f.userPrincipalName);g.apps.add(f.app);g.policies.add(f.policyName);g.clientApps.add(f.clientApp);
+    if(f.when&&f.when<g.firstSeen)g.firstSeen=f.when;if(f.when&&f.when>g.lastSeen)g.lastSeen=f.when;}
+  return [...map.values()].map(g=>({...g,users:[...g.users],apps:[...g.apps],policies:[...g.policies],clientApps:[...g.clientApps],userCount:g.users.size,appCount:g.apps.size})).sort((a,b)=>b.blocked-a.blocked||b.total-a.total);}
+function buildPolicyImpact(policies,reportOnlyIds,findings){const byId=new Map();
+  for(const f of findings){if(!byId.has(f.policyId))byId.set(f.policyId,{blocked:0,challenged:0,users:new Set(),apps:new Set()});const g=byId.get(f.policyId);f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;g.users.add(f.userPrincipalName);g.apps.add(f.app);}
+  const rows=[];for(const p of policies){if(!reportOnlyIds.has(p.id))continue;const g=byId.get(p.id)||{blocked:0,challenged:0,users:new Set(),apps:new Set()};const iu=g.users.size;
+    rows.push({policyId:p.id,policyName:p.displayName,state:p.state,grant:grantLabel(p),blockedSignIns:g.blocked,challengedSignIns:g.challenged,impactedUsers:iu,impactedApps:g.apps.size,
+      verdict:g.blocked===0&&g.challenged===0?'SAFE':g.blocked>0?'IMPACT':'FRICTION'});}
+  return rows.sort((a,b)=>b.blockedSignIns-a.blockedSignIns||b.challengedSignIns-a.challengedSignIns);}
+function buildLegacyAuthView(findings){const legacy=findings.filter(f=>f.legacyAuth&&f.impact===IMPACT.BLOCK);const byUser=groupBy(legacy,f=>f.userPrincipalName,'user');
+  return {totalBlockedSignIns:legacy.length,affectedUsers:byUser.length,protocols:[...new Set(legacy.map(f=>f.clientApp))],users:byUser};}
+function buildSummary(policies,reportOnlyIds,findings,signIns){const blocked=findings.filter(f=>f.impact===IMPACT.BLOCK);const challenged=findings.filter(f=>f.impact===IMPACT.CHALLENGE);
+  const bu=new Set(blocked.map(f=>f.userPrincipalName));const cu=new Set(challenged.map(f=>f.userPrincipalName));const dates=signIns.map(s=>s.createdDateTime).filter(Boolean).sort();
+  return {windowStart:dates[0]||null,windowEnd:dates[dates.length-1]||null,signInsAnalyzed:signIns.length,reportOnlyPolicies:reportOnlyIds.size,policiesTotal:policies.length,
+    wouldBeBlockedSignIns:blocked.length,wouldBeChallengedSignIns:challenged.length,usersBlocked:bu.size,usersChallenged:cu.size,
+    usersChallengedOnly:[...cu].filter(u=>!bu.has(u)).length,legacyAuthBlockedSignIns:blocked.filter(f=>f.legacyAuth).length,
+    verdict:blocked.length===0?'READY':'HOLD'};}
+
+/* ============================================================
+   Live connection — MSAL + Microsoft Graph (delegated, GDAP)
+   ============================================================ */
+const $=s=>document.querySelector(s);
+const GRAPH='https://graph.microsoft.com/v1.0';
+const SCOPES=['https://graph.microsoft.com/Policy.Read.All','https://graph.microsoft.com/AuditLog.Read.All','https://graph.microsoft.com/Directory.Read.All'];
+const redirectUri=location.origin!=='null'?location.origin+location.pathname:'';
+$('#redirectUri').textContent=redirectUri||'(open this page over http/https to see its URI)';
+
+// remember client id locally (self-hosted tool; not a claude.ai artifact)
+try{const saved=localStorage.getItem('af_clientId');if(saved)$('#clientId').value=saved;}catch(e){}
+
+function setStatus(msg,kind){const el=$('#status');el.className='status show'+(kind?' '+kind:'');el.innerHTML=msg;}
+
+async function graphGetAll(url,token,pageCap=25){
+  const out=[];let next=url,pages=0;
+  while(next&&pages<pageCap){
+    const res=await fetch(next,{headers:{Authorization:'Bearer '+token,'ConsistencyLevel':'eventual'}});
+    if(!res.ok){throw new Error(`Graph ${res.status} — ${(await res.text()).slice(0,200)}`);}
+    const j=await res.json();out.push(...(j.value||[]));next=j['@odata.nextLink']||null;pages++;
+  }
+  return {items:out,truncated:!!next};
+}
+
+async function fetchTenant(token,days){
+  const since=new Date(Date.now()-days*864e5).toISOString();
+  setStatus('<span class="spin"></span>Reading Conditional Access policies…');
+  const pol=(await graphGetAll(`${GRAPH}/identity/conditionalAccess/policies`,token)).items;
+  const types=['interactiveUser','nonInteractiveUser','servicePrincipal'];
+  let signIns=[],trunc=false;
+  for(const t of types){
+    setStatus(`<span class="spin"></span>Reading ${t} sign-ins…`);
+    const filter=`createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
+    const url=`${GRAPH}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
+    try{const r=await graphGetAll(url,token);signIns.push(...r.items);trunc=trunc||r.truncated;}
+    catch(e){/* some event types may be unavailable on lower SKUs; keep going */ console.warn(t,e.message);}
+  }
+  return {policies:pol,signIns,truncated:trunc};
+}
+
+let msalApp=null;
+async function connect(){
+  const clientId=$('#clientId').value.trim();
+  const tenant=$('#tenant').value.trim()||'organizations';
+  const days=Number($('#days').value);
+  if(!clientId){setStatus('Enter your app registration Client ID first (see setup below).','err');return;}
+  if(!redirectUri){setStatus('This page is running from a file path. Browser sign-in needs it served over http(s) or localhost — see setup.','err');return;}
+  if(typeof msal==='undefined'){setStatus('The Microsoft sign-in library could not load (network/CDN blocked). Check connectivity to alcdn.msftauth.net, or use the Upload tab.','err');return;}
+  try{localStorage.setItem('af_clientId',clientId);}catch(e){}
+  $('#connect').disabled=true;
+  try{
+    setStatus('<span class="spin"></span>Signing in…');
+    msalApp=new msal.PublicClientApplication({
+      auth:{clientId,authority:`https://login.microsoftonline.com/${tenant}`,redirectUri},
+      cache:{cacheLocation:'sessionStorage'}
+    });
+    if(typeof msalApp.initialize==='function')await msalApp.initialize(); // v3 needs it; v2 does not
+    const login=await msalApp.loginPopup({scopes:SCOPES,prompt:'select_account'});
+    msalApp.setActiveAccount(login.account);
+    let tok;
+    try{tok=await msalApp.acquireTokenSilent({scopes:SCOPES,account:login.account});}
+    catch(e){tok=await msalApp.acquireTokenPopup({scopes:SCOPES});}
+    const {policies,signIns,truncated}=await fetchTenant(tok.accessToken,days);
+    setStatus(`<span class="spin"></span>Analysing ${signIns.length} sign-ins across ${policies.length} policies…`);
+    render(analyze(policies,signIns));
+    setStatus(`Connected to ${login.account.username.split('@')[1]||'tenant'} — ${signIns.length} sign-ins analysed.`
+      +(truncated?' <b>Note:</b> hit the page cap; widen with care or shorten the window.':''),'ok');
+  }catch(err){
+    console.error(err);
+    setStatus('Connection failed: '+(err.errorMessage||err.message||err)+'. Check the Client ID, that this URL is a registered SPA redirect URI, and that the tenant has consented + has Entra ID P1/P2.','err');
+  }finally{$('#connect').disabled=false;}
+}
+$('#connect').onclick=connect;
+
+/* ============================================================
+   Upload fallback
+   ============================================================ */
+let raw={policies:null,signIns:null};
+function pickArray(json){if(Array.isArray(json))return json;if(json&&Array.isArray(json.value))return json.value;return [];}
+async function readFile(input){const f=input.files[0];if(!f)return null;return pickArray(JSON.parse(await f.text()));}
+$('#tab-live').onclick=()=>{$('#tab-live').classList.add('active');$('#tab-upload').classList.remove('active');$('#pane-live').classList.remove('hidden');$('#pane-upload').classList.add('hidden');};
+$('#tab-upload').onclick=()=>{$('#tab-upload').classList.add('active');$('#tab-live').classList.remove('active');$('#pane-upload').classList.remove('hidden');$('#pane-live').classList.add('hidden');};
+$('#file-pol').onchange=async e=>{raw.policies=await readFile(e.target);$('#drop-pol').classList.toggle('set',!!raw.policies);};
+$('#file-sign').onchange=async e=>{raw.signIns=await readFile(e.target);$('#drop-sign').classList.toggle('set',!!raw.signIns);};
+$('#run').onclick=()=>{if(!raw.policies||!raw.signIns){alert('Add both the policies export and the sign-in logs export.');return;}render(analyze(raw.policies,raw.signIns));};
+$('#demo').onclick=()=>render(analyze(DEMO.policies,DEMO.signIns));
+
+/* ============================================================
+   Render
+   ============================================================ */
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function pill(impact){return impact==='block'?'<span class="pill block">Would block</span>':'<span class="pill challenge">Would challenge</span>';}
+function render(r){
+  const s=r.summary;const ready=s.verdict==='READY';let html='';
+  html+=`<div class="verdict ${ready?'ready':'hold'}">${ready?'✓ READY TO ENFORCE':'⚠ HOLD — review before enforcing'}
+    <small>${ready?`No sign-in in this window would be blocked. Window: ${fmt(s.windowStart)} → ${fmt(s.windowEnd)}, ${s.signInsAnalyzed} sign-ins across ${s.reportOnlyPolicies} report-only policies.`
+    :`Enforcing now would block <b>${s.wouldBeBlockedSignIns}</b> sign-in(s) across <b>${s.usersBlocked}</b> user(s). Window: ${fmt(s.windowStart)} → ${fmt(s.windowEnd)}, ${s.signInsAnalyzed} sign-ins.`}</small></div>`;
+  html+=`<div class="tiles">
+    ${tile(s.wouldBeBlockedSignIns,'sign-ins blocked',s.wouldBeBlockedSignIns?'bad':'ok')}
+    ${tile(s.usersBlocked,'users blocked',s.usersBlocked?'bad':'ok')}
+    ${tile(s.wouldBeChallengedSignIns,'extra challenges',s.wouldBeChallengedSignIns?'warn':'ok')}
+    ${tile(s.legacyAuthBlockedSignIns,'legacy-auth blocks',s.legacyAuthBlockedSignIns?'bad':'ok')}
+    ${tile(s.reportOnlyPolicies,'report-only policies','')}</div>`;
+  html+=`<h2>Policies about to be enforced</h2><div class="card"><table><thead><tr>
+    <th>Policy</th><th>Grant</th><th>Blocks</th><th>Challenges</th><th>Users</th><th>Verdict</th></tr></thead><tbody>`;
+  for(const p of r.byPolicy){const v=p.verdict;const cls=v==='SAFE'?'safe':v==='IMPACT'?'block':'challenge';
+    html+=`<tr><td><b>${esc(p.policyName)}</b></td><td class="muted">${esc(p.grant)}</td>
+      <td>${p.blockedSignIns||''}</td><td>${p.challengedSignIns||''}</td><td>${p.impactedUsers||''}</td>
+      <td><span class="pill ${cls}">${v==='SAFE'?'Safe to enforce':v==='IMPACT'?'Would block':'Adds friction'}</span></td></tr>`;}
+  if(!r.byPolicy.length)html+=`<tr><td colspan="6" class="muted">No report-only policies found.</td></tr>`;
+  html+=`</tbody></table></div>`;
+  if(r.legacyAuth.totalBlockedSignIns){
+    html+=`<h2>Legacy authentication exposure</h2><div class="card" style="border-left:4px solid var(--bad)">
+      <p style="margin-top:0"><b>${r.legacyAuth.totalBlockedSignIns}</b> legacy-auth sign-in(s) from <b>${r.legacyAuth.affectedUsers}</b> user(s) would be blocked
+      (${r.legacyAuth.protocols.map(p=>`<span class="tag legacy">${esc(p)}</span>`).join('')}). These break silently — the user gets a password
+      failure, not a prompt. Confirm each account has no dependency (old Outlook profiles, scanners, scripts, IMAP/POP) before enforcing.</p></div>`;
+  }
+  html+=section('Users who would be blocked',r.byUser.filter(u=>u.blocked),['user','blocked','challenged','apps','policies'],
+    u=>`<tr><td><b>${esc(u.user)}</b></td><td>${u.blocked}</td><td>${u.challenged||''}</td>
+      <td>${u.apps.slice(0,4).map(a=>`<span class="tag">${esc(a)}</span>`).join('')}${u.apps.length>4?` +${u.apps.length-4}`:''}</td>
+      <td>${u.policies.map(p=>`<span class="tag">${esc(p)}</span>`).join('')}</td></tr>`,'No users blocked.');
+  html+=section('Apps / resources affected',r.byApp,['app','blocked','challenged','users'],
+    a=>`<tr><td><b>${esc(a.app)}</b></td><td>${a.blocked||''}</td><td>${a.challenged||''}</td><td>${a.userCount}</td></tr>`,'No apps affected.');
+  if(r.byDevice.length)
+    html+=section('Devices affected',r.byDevice,['device','blocked','users'],
+      d=>`<tr><td><b>${esc(d.device)}</b></td><td>${d.blocked||''}</td><td>${d.userCount}</td></tr>`,'');
+  html+=`<h2>Every impacted sign-in <button class="btn-orange" id="csv" style="float:right;padding:6px 12px;font-size:13px">Export CSV</button></h2>
+    <div class="toolbar"><input type="search" id="q" placeholder="Filter user, app, policy, protocol…"><span class="muted" id="count"></span></div>
+    <div class="card" style="padding:0;overflow:auto"><table id="detail"><thead><tr>
+      <th>When</th><th>User</th><th>App</th><th>Client</th><th>Device</th><th>Policy</th><th>Impact</th></tr></thead><tbody></tbody></table></div>`;
+  $('#report').innerHTML=html;$('#report').classList.remove('hidden');
+  const rows=r.findings.slice().sort((a,b)=>(a.when<b.when?1:-1));const tb=$('#detail tbody');
+  function draw(filter=''){const f=filter.toLowerCase();
+    const shown=rows.filter(x=>!f||[x.userPrincipalName,x.app,x.policyName,x.clientApp,x.location,x.device].join(' ').toLowerCase().includes(f));
+    tb.innerHTML=shown.map(x=>`<tr><td class="muted" style="white-space:nowrap">${fmt(x.when)}</td>
+      <td>${esc(x.userPrincipalName)}</td><td>${esc(x.app)}</td>
+      <td>${x.legacyAuth?`<span class="tag legacy">${esc(x.clientApp)}</span>`:esc(x.clientApp)}</td>
+      <td class="muted">${esc(x.device||'')}${x.deviceCompliant===false?' <span class="tag">non-compliant</span>':''}</td>
+      <td>${esc(x.policyName)}</td><td>${pill(x.impact)}</td></tr>`).join('');
+    $('#count').textContent=`${shown.length} of ${rows.length} shown`;}
+  draw();$('#q').oninput=e=>draw(e.target.value);$('#csv').onclick=()=>exportCsv(rows);
+  $('#report').scrollIntoView({behavior:'smooth'});
+}
+function tile(n,l,cls){return `<div class="tile ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;}
+function section(title,data,cols,rowFn,empty){let h=`<h2>${title}</h2><div class="card"><table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
+  h+=data.length?data.map(rowFn).join(''):`<tr><td colspan="${cols.length}" class="muted">${empty}</td></tr>`;return h+`</tbody></table></div>`;}
+function fmt(d){if(!d)return '';const t=new Date(d);return isNaN(t)?d:t.toISOString().slice(0,16).replace('T',' ');}
+function exportCsv(rows){const cols=['when','userPrincipalName','app','clientApp','legacyAuth','device','deviceCompliant','location','ip','policyName','result','impact','reason'];
+  const csv=[cols.join(',')].concat(rows.map(r=>cols.map(c=>`"${String(r[c]??'').replace(/"/g,'""')}"`).join(','))).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='accessforecast-impacted-signins.csv';a.click();}
+
+/* Demo data */
+const DEMO={
+ policies:[
+  {id:'pol-block-legacy',displayName:'Block legacy authentication',state:'enabledForReportingButNotEnforced',grantControls:{builtInControls:['block']}},
+  {id:'pol-require-mfa',displayName:'Require MFA for all users',state:'enabledForReportingButNotEnforced',grantControls:{builtInControls:['mfa']}},
+  {id:'pol-compliant-device',displayName:'Require compliant device for Exchange',state:'enabledForReportingButNotEnforced',grantControls:{builtInControls:['compliantDevice']}},
+  {id:'pol-clean',displayName:'Require MFA for admins',state:'enabledForReportingButNotEnforced',grantControls:{builtInControls:['mfa']}},
+  {id:'pol-already-on',displayName:'Block from outside Ireland (enforced)',state:'enabled',grantControls:{builtInControls:['block']}}],
+ signIns:[
+  {id:'si-1',createdDateTime:'2026-07-20T08:00:00Z',userPrincipalName:'joan@client.ie',userDisplayName:'Joan Murphy',appDisplayName:'Office 365 Exchange Online',clientAppUsed:'IMAP4',ipAddress:'89.1.1.1',location:{city:'Dublin',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'Windows',isCompliant:false,isManaged:false},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-block-legacy',displayName:'Block legacy authentication',enforcedGrantControls:['Block'],result:'reportOnlyFailure'}]},
+  {id:'si-2',createdDateTime:'2026-07-20T09:30:00Z',userPrincipalName:'liam@client.ie',userDisplayName:'Liam Byrne',appDisplayName:'Microsoft Teams',clientAppUsed:'Browser',ipAddress:'89.1.1.2',location:{city:'Cork',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'Windows',browser:'Edge',isCompliant:false,isManaged:false},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlyFailure'}]},
+  {id:'si-3',createdDateTime:'2026-07-21T09:00:00Z',userPrincipalName:'liam@client.ie',userDisplayName:'Liam Byrne',appDisplayName:'Microsoft Teams',clientAppUsed:'Browser',ipAddress:'89.1.1.2',location:{city:'Cork',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'Windows',browser:'Edge',isCompliant:true,isManaged:true},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlySuccess'}]},
+  {id:'si-4',createdDateTime:'2026-07-22T14:15:00Z',userPrincipalName:'joan@client.ie',userDisplayName:'Joan Murphy',appDisplayName:'Office 365 Exchange Online',clientAppUsed:'Mobile Apps and Desktop clients',ipAddress:'89.1.1.1',location:{city:'Dublin',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'iOS',isCompliant:false,isManaged:false,displayName:'Joan-iPhone'},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-compliant-device',displayName:'Require compliant device for Exchange',enforcedGrantControls:['CompliantDevice'],result:'reportOnlyFailure'}]},
+  {id:'si-5',createdDateTime:'2026-07-22T16:00:00Z',userPrincipalName:'aoife@client.ie',userDisplayName:'Aoife Kelly',appDisplayName:'Salesforce',clientAppUsed:'Browser',ipAddress:'89.1.1.3',location:{city:'Galway',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'MacOS',browser:'Safari',isCompliant:false,isManaged:false},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlyInterrupted'}]}]
+};
+</script>
+</body>
+</html>
