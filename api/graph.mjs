@@ -1,16 +1,6 @@
 // App-only (client-credentials) Graph access for AccessForecast.
-// Fully unattended: no interactive sign-in, no refresh token. The multitenant
-// app is consented in each client tenant (via CIPP App Approval or admin consent),
-// and here we mint an app-only token PER TENANT and read Graph read-only.
-//
-// Secrets come from app settings backed by Key Vault — never hard-code:
-//   AF_CLIENT_ID       app (client) ID of the multitenant app registration
-//   AF_CLIENT_SECRET   client secret (or swap for a certificate — see DEPLOYMENT.md)
-//   AF_TENANTS         JSON: [{ "id": "<guid>", "name": "Client A" }, ...]
-
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 
-/** App-only token for a specific customer tenant. */
 export async function getAppToken(tenantId) {
   const body = new URLSearchParams({
     client_id: process.env.AF_CLIENT_ID,
@@ -27,11 +17,9 @@ export async function getAppToken(tenantId) {
   return (await res.json()).access_token;
 }
 
-/** Page through a Graph collection, concatenating every `value` array. */
 async function getAll(url, token, pageCap = 50) {
   const out = [];
-  let next = url,
-    pages = 0;
+  let next = url, pages = 0;
   while (next && pages < pageCap) {
     const res = await fetch(next, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`Graph ${res.status} on ${next}: ${(await res.text()).slice(0, 300)}`);
@@ -47,7 +35,6 @@ export function getPolicies(token) {
   return getAll(`${GRAPH}/identity/conditionalAccess/policies`, token);
 }
 
-/** All sign-in event types (interactive + non-interactive + service principal). */
 export async function getSignIns(token, days = 7) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const types = ['interactiveUser', 'nonInteractiveUser', 'servicePrincipal'];
@@ -55,28 +42,36 @@ export async function getSignIns(token, days = 7) {
   for (const t of types) {
     const filter = `createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
     const url = `${GRAPH}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
-    try {
-      all.push(...(await getAll(url, token)));
-    } catch (e) {
-      // Some event types may be unavailable on lower SKUs — keep going.
-      console.warn(`signIns ${t}: ${e.message}`);
-    }
+    try { all.push(...(await getAll(url, token))); }
+    catch (e) { console.warn(`signIns ${t}: ${e.message}`); }
   }
   return all;
 }
 
-/** One-shot: raw Graph data for a tenant. */
 export async function fetchTenantData(tenantId, days = 7) {
   const token = await getAppToken(tenantId);
   const [policies, signIns] = await Promise.all([getPolicies(token), getSignIns(token, days)]);
   return { policies, signIns };
 }
 
-/** Configured customer tenant list (from Key Vault-backed app setting). */
 export function getConfiguredTenants() {
-  try {
-    return JSON.parse(process.env.AF_TENANTS || '[]');
-  } catch {
-    return [];
+  try { return JSON.parse(process.env.AF_TENANTS || '[]'); } catch { return []; }
+}
+
+export async function discoverTenants() {
+  const token = await getAppToken(process.env.PARTNER_TENANT_ID);
+  const url = `${GRAPH}/tenantRelationships/delegatedAdminRelationships?$filter=${encodeURIComponent("status eq 'active'")}`;
+  const rels = await getAll(url, token);
+  const byId = new Map();
+  for (const r of rels) {
+    const c = r.customer;
+    if (c?.tenantId && !byId.has(c.tenantId)) byId.set(c.tenantId, { id: c.tenantId, name: c.displayName || c.tenantId });
   }
+  return [...byId.values()];
+}
+
+export async function resolveTenants() {
+  const override = getConfiguredTenants();
+  if (override.length) return override;
+  return discoverTenants();
 }
