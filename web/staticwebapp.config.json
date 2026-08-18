@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/staticwebapp.config.json",
   "routes": [
-    { "route": "/api/*", "allowedRoles": ["staff"] },
-    { "route": "/*", "allowedRoles": ["staff"] }
+    { "route": "/api/*", "allowedRoles": ["authenticated"] },
+    { "route": "/*", "allowedRoles": ["authenticated"] }
   ],
   "responseOverrides": {
     "401": { "redirect": "/.auth/login/aad", "statusCode": 302 }
@@ -12,7 +12,7 @@
     "identityProviders": {
       "azureActiveDirectory": {
         "registration": {
-          "openIdIssuer": "https://login.microsoftonline.com/<PARTNER_TENANT_ID>/v2.0",
+          "openIdIssuer": "https://login.microsoftonline.com/befa181c-0462-4610-8e82-94a63ceb7ad9/v2.0",
           "clientIdSettingName": "AAD_CLIENT_ID",
           "clientSecretSettingName": "AAD_CLIENT_SECRET"
         }
