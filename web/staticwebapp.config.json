@@ -1,22 +1,3 @@
 {
-  "$schema": "https://json.schemastore.org/staticwebapp.config.json",
-  "routes": [
-    { "route": "/api/*", "allowedRoles": ["staff"] },
-    { "route": "/*", "allowedRoles": ["staff"] }
-  ],
-  "responseOverrides": {
-    "401": { "redirect": "/.auth/login/aad", "statusCode": 302 }
-  },
-  "auth": {
-    "identityProviders": {
-      "azureActiveDirectory": {
-        "registration": {
-          "openIdIssuer": "https://login.microsoftonline.com/<PARTNER_TENANT_ID>/v2.0",
-          "clientIdSettingName": "AAD_CLIENT_ID",
-          "clientSecretSettingName": "AAD_CLIENT_SECRET"
-        }
-      }
-    }
-  },
-  "_comment": "Gates the whole app + API to Rockfield staff (assign the 'staff' role to your team). Client sign-in data is only reachable behind this."
+  "navigationFallback": { "rewrite": "/index.html" }
 }
