@@ -60,12 +60,12 @@ export function getConfiguredTenants() {
 
 export async function discoverTenants() {
   const token = await getAppToken(process.env.PARTNER_TENANT_ID);
-  const url = `${GRAPH}/tenantRelationships/delegatedAdminRelationships?$filter=${encodeURIComponent("status eq 'active'")}`;
-  const rels = await getAll(url, token);
+  const contracts = await getAll(`${GRAPH}/contracts?$top=999`, token);
   const byId = new Map();
-  for (const r of rels) {
-    const c = r.customer;
-    if (c?.tenantId && !byId.has(c.tenantId)) byId.set(c.tenantId, { id: c.tenantId, name: c.displayName || c.tenantId });
+  for (const c of contracts) {
+    if (c.customerId && !byId.has(c.customerId)) {
+      byId.set(c.customerId, { id: c.customerId, name: (c.displayName || '').trim() || c.defaultDomainName || c.customerId });
+    }
   }
   return [...byId.values()];
 }
