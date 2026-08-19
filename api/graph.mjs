@@ -35,10 +35,10 @@ export function getPolicies(token) {
   return getAll(`${GRAPH}/identity/conditionalAccess/policies`, token);
 }
 
-export async function getSignIns(token, days = 7) {
+export async function getSignIns(token, days = 7, user = null) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const BETA = 'https://graph.microsoft.com/beta';
-  // interactive is low-volume; non-interactive/SP can be enormous, so cap their pages.
+  const userClause = user ? ` and userPrincipalName eq '${user.replace(/'/g, "''")}'` : '';
   const plan = [
     { t: 'interactiveUser', maxPages: 50 },
     { t: 'nonInteractiveUser', maxPages: 6 },
@@ -47,7 +47,7 @@ export async function getSignIns(token, days = 7) {
   const all = [];
   const errors = [];
   for (const { t, maxPages } of plan) {
-    const filter = `createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
+    const filter = `createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')${userClause}`;
     let url = `${BETA}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
     let pages = 0;
     try {
@@ -63,6 +63,12 @@ export async function getSignIns(token, days = 7) {
   }
   if (all.length === 0 && errors.length) throw new Error('Sign-in read failed -> ' + errors.join(' | '));
   return all;
+}
+
+export async function fetchTenantData(tenantId, days = 7, user = null) {
+  const token = await getAppToken(tenantId);
+  const [policies, signIns] = await Promise.all([getPolicies(token), getSignIns(token, days, user)]);
+  return { policies, signIns };
 }
 
 export async function fetchTenantData(tenantId, days = 7) {
