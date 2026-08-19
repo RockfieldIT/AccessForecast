@@ -39,12 +39,14 @@ export async function getSignIns(token, days = 7) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const types = ['interactiveUser', 'nonInteractiveUser', 'servicePrincipal'];
   const all = [];
+  const errors = [];
   for (const t of types) {
     const filter = `createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
     const url = `${GRAPH}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
     try { all.push(...(await getAll(url, token))); }
-    catch (e) { console.warn(`signIns ${t}: ${e.message}`); }
+    catch (e) { errors.push(`${t}: ${e.message}`); }
   }
+  if (all.length === 0 && errors.length) throw new Error('Sign-in read failed -> ' + errors.join(' | '));
   return all;
 }
 
