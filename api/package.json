@@ -1,9 +1,10 @@
 {
   "name": "accessforecast-api",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "type": "module",
-  "main": "{getReportOnlyImpact,getEstate,getTenants}/function.mjs",
+  "main": "{getReportOnlyImpact,getEstate,getTenants,reportOnlyImpactAsync}/function.mjs",
   "dependencies": {
-    "@azure/functions": "^4.5.0"
+    "@azure/functions": "^4.5.0",
+    "durable-functions": "^3.1.0"
   }
 }
