@@ -38,14 +38,28 @@ export function getPolicies(token) {
 export async function getSignIns(token, days = 7) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const BETA = 'https://graph.microsoft.com/beta';
-  const types = ['interactiveUser', 'nonInteractiveUser', 'servicePrincipal'];
+  // interactive is low-volume; non-interactive/SP can be enormous, so cap their pages.
+  const plan = [
+    { t: 'interactiveUser', maxPages: 50 },
+    { t: 'nonInteractiveUser', maxPages: 6 },
+    { t: 'servicePrincipal', maxPages: 6 },
+  ];
   const all = [];
   const errors = [];
-  for (const t of types) {
+  for (const { t, maxPages } of plan) {
     const filter = `createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
-    const url = `${BETA}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
-    try { all.push(...(await getAll(url, token))); }
-    catch (e) { errors.push(`${t}: ${e.message}`); }
+    let url = `${BETA}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
+    let pages = 0;
+    try {
+      while (url && pages < maxPages) {
+        const res = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+        if (!res.ok) throw new Error(`Graph ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        const json = await res.json();
+        all.push(...(json.value || []));
+        url = json['@odata.nextLink'] || null;
+        pages++;
+      }
+    } catch (e) { errors.push(`${t}: ${e.message}`); }
   }
   if (all.length === 0 && errors.length) throw new Error('Sign-in read failed -> ' + errors.join(' | '));
   return all;
