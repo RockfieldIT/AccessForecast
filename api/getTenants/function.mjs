@@ -1,3 +1,5 @@
+// GET /api/getTenants — the client tenant list for the picker.
+// Auto-discovered from your active GDAP relationships (or the AF_TENANTS override).
 import { app } from '@azure/functions';
 import { resolveTenants, getConfiguredTenants } from '../graph.mjs';
 

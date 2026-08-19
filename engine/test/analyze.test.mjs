@@ -75,3 +75,102 @@ test('empty input is safe and READY', () => {
   assert.equal(r.summary.wouldBeBlockedSignIns, 0);
   assert.match(r.summary.verdict, /^READY/);
 });
+
+// ---- Severity buckets + technician report (the rework) ----
+
+// The shared fixtures: 3 definite blocks (si-1,2,4), 1 interactive MFA prompt (si-5).
+test('shared fixtures classify into definite/silent/prompt', () => {
+  const r = analyze(policies, signIns);
+  assert.equal(r.summary.definiteBlocks, 3);
+  assert.equal(r.summary.silentBreaks, 0);
+  assert.equal(r.summary.prompts, 1); // si-5 interactive MFA interruption
+});
+
+// A non-interactive (background) sign-in that gets interrupted = SILENT breakage.
+const silentPolicies = [
+  {
+    id: 'pol-mfa',
+    displayName: 'Require MFA for all users',
+    state: 'enabledForReportingButNotEnforced',
+    grantControls: { operator: 'OR', builtInControls: ['mfa'] },
+  },
+];
+const silentSignIns = [
+  {
+    id: 'bg-1',
+    createdDateTime: '2026-07-22T02:00:00Z',
+    userPrincipalName: 'adrian@dcae.ie',
+    userDisplayName: 'Adrian',
+    appDisplayName: 'OneDrive SyncEngine',
+    clientAppUsed: 'Mobile Apps and Desktop clients',
+    isInteractive: false, // background token refresh — nobody at the keyboard
+    deviceDetail: { operatingSystem: 'Windows', displayName: 'ADRIAN-LT' },
+    status: { errorCode: 0 },
+    appliedConditionalAccessPolicies: [
+      { id: 'pol-mfa', displayName: 'Require MFA for all users', enforcedGrantControls: ['Mfa'], result: 'reportOnlyInterrupted' },
+    ],
+  },
+];
+
+test('non-interactive interruption becomes a SILENT break, not a prompt', () => {
+  const r = analyze(silentPolicies, silentSignIns);
+  assert.equal(r.summary.silentBreaks, 1);
+  assert.equal(r.summary.prompts, 0);
+  assert.equal(r.summary.definiteBlocks, 0);
+  const f = r.findings[0];
+  assert.equal(f.severity, 'silent');
+  assert.equal(f.nonInteractive, true);
+  // verdict must escalate to HOLD for silent breakage
+  assert.match(r.summary.verdict, /^HOLD/);
+  // remediation should call out the silent/background nature
+  assert.match(f.remediation, /silent|background/i);
+});
+
+test('technician report emits per-policy, per-user action lines', () => {
+  const r = analyze(policies, signIns);
+  assert.ok(Array.isArray(r.report) && r.report.length > 0);
+  const mfa = r.report.find((e) => e.policyId === 'pol-require-mfa');
+  assert.ok(mfa, 'expected the MFA policy in the report');
+  // Liam is a definite block under require-mfa (si-2 reportOnlyFailure)
+  const liam = mfa.users.find((u) => u.user === 'liam@client.ie');
+  assert.equal(liam.severity, 'definite');
+  assert.match(liam.line, /BLOCKED/);
+  assert.match(liam.line, /Fix:/);
+  // headline summarises the blast radius
+  assert.match(mfa.headline, /Enabling "Require MFA for all users"/);
+});
+
+test('an interactive-only policy yields REVIEW, not HOLD', () => {
+  const promptOnly = analyze(
+    [silentPolicies[0]],
+    [{ ...silentSignIns[0], id: 'ix-1', isInteractive: true }]
+  );
+  assert.equal(promptOnly.summary.prompts, 1);
+  assert.equal(promptOnly.summary.silentBreaks, 0);
+  assert.match(promptOnly.summary.verdict, /^REVIEW/);
+});
+
+test('a compliant-device interruption is silent even when interactive (unfixable at prompt)', () => {
+  const pol = [{
+    id: 'pol-cd',
+    displayName: 'Require compliant device',
+    state: 'enabledForReportingButNotEnforced',
+    grantControls: { operator: 'OR', builtInControls: ['compliantDevice'] },
+  }];
+  const si = [{
+    id: 'cd-1',
+    createdDateTime: '2026-07-22T10:00:00Z',
+    userPrincipalName: 'sara@client.ie',
+    appDisplayName: 'SharePoint',
+    clientAppUsed: 'Browser',
+    isInteractive: true,
+    deviceDetail: { operatingSystem: 'Windows', displayName: 'SARA-PC', isCompliant: false },
+    status: { errorCode: 0 },
+    appliedConditionalAccessPolicies: [
+      { id: 'pol-cd', displayName: 'Require compliant device', enforcedGrantControls: ['CompliantDevice'], result: 'reportOnlyInterrupted' },
+    ],
+  }];
+  const r = analyze(pol, si);
+  assert.equal(r.findings[0].severity, 'silent');
+  assert.match(r.findings[0].remediation, /Intune|compliant/i);
+});

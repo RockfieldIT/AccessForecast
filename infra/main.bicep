@@ -36,9 +36,9 @@ resource swaSettings 'Microsoft.Web/staticSites/config@2023-12-01' = {
   properties: {
     AF_CLIENT_ID: '<app-registration-client-id>'
     AF_CLIENT_SECRET: '@Microsoft.KeyVault(SecretUri=https://${namePrefix}-kv${environment().suffixes.keyvaultDns}/secrets/AF-CLIENT-SECRET/)'
-    // JSON array of your client tenants, e.g. [{"id":"<guid>","name":"Client A"}]
-    AF_TENANTS: '[]'
-    PARTNER_TENANT_ID: partnerTenantId
+    PARTNER_TENANT_ID: partnerTenantId // used to auto-discover clients from GDAP relationships
+    // AF_TENANTS is an OPTIONAL override only. Leave unset for automatic GDAP discovery of all clients.
+    AF_TENANTS: ''
   }
 }
 

@@ -70,8 +70,12 @@ these, then **Save**:
 | Name | Value |
 |------|-------|
 | `AF_CLIENT_ID` | the Application (client) ID from Step 1 |
-| `AF_TENANTS` | your client list as one-line JSON, e.g. `[{"id":"<guid>","name":"Client A"},{"id":"<guid>","name":"Client B"}]` |
+| `PARTNER_TENANT_ID` | your Rockfield (MSP) tenant ID — used to auto-discover your clients |
 | `AF_CLIENT_SECRET` | `@Microsoft.KeyVault(SecretUri=https://rf-accessforecast-kv.vault.azure.net/secrets/AF-CLIENT-SECRET/)` |
+
+That's it — **no client list to enter**. The app finds every client automatically from your
+active GDAP relationships. (`AF_TENANTS` exists only as an optional override if you ever want to
+limit the tool to a subset of tenants — leave it unset for "all my clients".)
 
 After saving, the `AF_CLIENT_SECRET` row should show a green **Key Vault Reference** resolved
 status within a minute (if it shows an error, re-check Step 5b).
@@ -116,11 +120,10 @@ there yet (Step 2) or that tenant lacks Entra ID P1/P2 for sign-in logs.
 
 ---
 
-## Adding a client later (all in the browser)
-1. Consent the app in the new tenant (CIPP App Approval Standard does this automatically, or use
-   the admin-consent URL).
-2. Static Web App → **Environment variables** → edit `AF_TENANTS` to add `{"id":"…","name":"…"}`
-   → Save. No redeploy needed.
+## Adding a client later — nothing to do
+Once you onboard a client through your normal CIPP/GDAP process and the app is consented there
+(CIPP App Approval Standard does this automatically), it **appears in AccessForecast on its own** —
+no environment variable to edit, no redeploy. That's the whole point of the auto-discovery.
 
 ## If you'd rather skip GitHub entirely
 The only step that needs GitHub (or one CLI command) is deploying the `api/` + `web/` code. If you

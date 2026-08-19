@@ -161,41 +161,62 @@
    ============================================================ */
 const REPORT_ONLY_STATE='enabledForReportingButNotEnforced';
 const IMPACT={BLOCK:'block',CHALLENGE:'challenge',NONE:'none'};
+const SEV={DEFINITE:'definite',SILENT:'silent',PROMPT:'prompt'};
+const SEV_RANK={definite:0,silent:1,prompt:2};
+const DEVICE_OR_APP=new Set(['compliantdevice','domainjoineddevice','approvedapplication','compliantapplication']);
 function classifyResult(r){switch(r){case 'reportOnlyFailure':return IMPACT.BLOCK;case 'failure':return IMPACT.BLOCK;case 'reportOnlyInterrupted':return IMPACT.CHALLENGE;default:return IMPACT.NONE;}}
-function describeControls(c){if(!c||!c.length)return 'Grant controls not recorded';const m={block:'Block access',mfa:'Require MFA',compliantDevice:'Require compliant device',domainJoinedDevice:'Require Hybrid-joined device',approvedApplication:'Require approved client app',compliantApplication:'Require app protection policy',passwordChange:'Require password change'};return c.map(x=>m[String(x).toLowerCase()]||x).join(' AND ');}
+function describeControls(c){if(!c||!c.length)return 'Grant controls not recorded';const m={block:'Block access',mfa:'Require multifactor authentication',compliantdevice:'Require compliant device',domainjoineddevice:'Require Hybrid Azure AD joined device',approvedapplication:'Require approved client app',compliantapplication:'Require app protection policy',passwordchange:'Require password change'};return c.map(x=>m[String(x).toLowerCase()]||x).join(' AND ');}
 function grantLabel(policy){const b=policy?.grantControls?.builtInControls||[];if(b.length)return describeControls(b);const as=policy?.grantControls?.authenticationStrength?.displayName;if(as)return `Require authentication strength: ${as}`;if(policy?.sessionControls)return 'Session controls';return 'Grant controls not recorded';}
 function isLegacyAuth(c){if(!c)return false;return !['Browser','Mobile Apps and Desktop clients'].includes(c);}
+function classifySeverity(impact,controlSet,nonInteractive){if(impact===IMPACT.BLOCK)return SEV.DEFINITE;if(nonInteractive)return SEV.SILENT;for(const c of controlSet)if(DEVICE_OR_APP.has(c))return SEV.SILENT;return SEV.PROMPT;}
+function suggestRemediation(f){const cs=f.controlSet;
+  if(cs.has('block')){if(f.legacyAuth)return `Move this mailbox/app off legacy authentication (${f.clientApp}). Switch to modern OAuth (e.g. new Outlook / Graph) and retire basic-auth protocols (IMAP/POP/SMTP AUTH). If a service account genuinely needs it, exclude it from the policy.`;return `This policy is meant to deny this sign-in. If it should be allowed, exclude this user/app or narrow the policy's conditions; otherwise it's working as intended.`;}
+  if(cs.has('compliantdevice'))return `Enrol ${f.device?`"${f.device}"`:'the device'} in Intune and bring it to compliant (or Hybrid-join it), then re-sign-in. If it can't be managed, exclude the device/user or scope the policy off this app.`;
+  if(cs.has('domainjoineddevice'))return `Hybrid Azure AD join ${f.device?`"${f.device}"`:'the device'} (or switch the control to "compliant device" via Intune). Unmanaged/personal devices can't satisfy this and will be blocked.`;
+  if(cs.has('approvedapplication')||cs.has('compliantapplication'))return `Use an approved app with an app-protection policy (e.g. Outlook / Teams mobile) — the current client (${f.clientApp}) can't satisfy this.${f.nonInteractive?' This is a background sign-in, so it will fail silently until the client is switched.':''}`;
+  if(cs.has('mfa')||f.authStrength){const method=f.authStrength?`a method that meets the "${f.authStrength}" strength (e.g. Microsoft Authenticator push/passkey or FIDO2)`:`an MFA method (Microsoft Authenticator or a FIDO2 key)`;
+    if(f.nonInteractive)return `Register ${method} for this user and have them complete MFA once interactively. This is a BACKGROUND sign-in — it can't prompt, so the service (${f.app}) will silently stop until a fresh, MFA-satisfied token is issued. Also confirm the client supports modern auth.`;
+    return `Have the user register ${method} and complete MFA once. After that this prompt clears on its own.`;}
+  return `Review this policy's grant controls against how ${f.app} signs in; exclude the user/app if the control can't be met.`;}
 function analyze(policies,signIns,options={}){
   const reportOnlyOnly=options.reportOnlyPoliciesOnly!==false;
   const policyById=new Map();(policies||[]).forEach(p=>policyById.set(p.id,p));
   const reportOnlyIds=new Set((policies||[]).filter(p=>p.state===REPORT_ONLY_STATE).map(p=>p.id));
   const findings=[];
   for(const s of signIns||[]){
+    const nonInteractive=s.isInteractive===false;
     for(const ap of (s.appliedConditionalAccessPolicies||[])){
-      const impact=classifyResult(ap.result); if(impact===IMPACT.NONE)continue;
+      const impact0=classifyResult(ap.result); if(impact0===IMPACT.NONE)continue;
       const policy=policyById.get(ap.id);
       const isRO=reportOnlyIds.has(ap.id)||(ap.result||'').startsWith('reportOnly');
       if(reportOnlyOnly&&!isRO)continue;
       const controls=ap.enforcedGrantControls||policy?.grantControls?.builtInControls||[];
-      const hardBlock=controls.map(c=>String(c).toLowerCase()).includes('block');
+      const controlSet=new Set(controls.map(c=>String(c).toLowerCase()));
+      const hardBlock=controlSet.has('block');
+      const impact=hardBlock?IMPACT.BLOCK:impact0;
       const authStrength=policy?.grantControls?.authenticationStrength?.displayName||null;
+      const legacyAuth=isLegacyAuth(s.clientAppUsed);
+      const device=s.deviceDetail?.displayName||s.deviceDetail?.operatingSystem||null;
+      const app=s.appDisplayName||s.resourceDisplayName||'(unknown app)';
+      const clientApp=s.clientAppUsed||'(unknown)';
+      const severity=classifySeverity(impact,controlSet,nonInteractive);
+      const remediation=suggestRemediation({controlSet,legacyAuth,clientApp,nonInteractive,device,authStrength,app});
       findings.push({signInId:s.id,when:s.createdDateTime,
         userPrincipalName:s.userPrincipalName||s.userDisplayName||'(unknown user)',
         userDisplayName:s.userDisplayName||null,
-        app:s.appDisplayName||s.resourceDisplayName||'(unknown app)',
-        resource:s.resourceDisplayName||null,
-        clientApp:s.clientAppUsed||'(unknown)',legacyAuth:isLegacyAuth(s.clientAppUsed),
+        app,resource:s.resourceDisplayName||null,
+        clientApp,legacyAuth,interactive:s.isInteractive===undefined?null:s.isInteractive,nonInteractive,
         ip:s.ipAddress||null,location:[s.location?.city,s.location?.countryOrRegion].filter(Boolean).join(', ')||null,
-        device:s.deviceDetail?.displayName||s.deviceDetail?.operatingSystem||null,
-        deviceCompliant:s.deviceDetail?.isCompliant??null,deviceManaged:s.deviceDetail?.isManaged??null,
+        device,deviceCompliant:s.deviceDetail?.isCompliant??null,deviceManaged:s.deviceDetail?.isManaged??null,
         os:s.deviceDetail?.operatingSystem||null,browser:s.deviceDetail?.browser||null,
         policyId:ap.id,policyName:ap.displayName||policy?.displayName||ap.id,result:ap.result,
-        impact:hardBlock?IMPACT.BLOCK:impact,controls,
+        impact,severity,controls,authStrength,
         reason:controls.length?describeControls(controls):(authStrength?`Require authentication strength: ${authStrength}`:'Grant controls not recorded'),
-        signInErrorCode:s.status?.errorCode??null});
+        remediation,signInErrorCode:s.status?.errorCode??null});
     }
   }
   return {summary:buildSummary(policies||[],reportOnlyIds,findings,signIns||[]),
+    report:buildTechReport(policies||[],reportOnlyIds,findings),
     byUser:groupBy(findings,f=>f.userPrincipalName,'user'),
     byApp:groupBy(findings,f=>f.app,'app'),
     byPolicy:buildPolicyImpact(policies||[],reportOnlyIds,findings),
@@ -204,25 +225,50 @@ function analyze(policies,signIns,options={}){
     byLocation:groupBy(findings.filter(f=>f.location),f=>f.location,'location'),
     legacyAuth:buildLegacyAuthView(findings),findings};
 }
+function techLine(u,apps,policyName){const appList=apps.slice(0,3).join(', ')+(apps.length>3?` +${apps.length-3} more`:'');const who=u.userDisplayName||u.user;
+  if(u.severity===SEV.DEFINITE)return `${who} will be BLOCKED from ${appList} when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;
+  if(u.severity===SEV.SILENT){const bg=u.backgroundCount>0?`background sign-ins (${appList}) will fail silently — the service stops with no prompt`:`${appList} will be interrupted with something the user can't satisfy in the moment`;return `${who}: ${bg} when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;}
+  return `${who} will be prompted (${appList}) when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;}
+function policyHeadline(name,d,s,p,total){const parts=[];if(d)parts.push(`block ${d} user${d>1?'s':''}`);if(s)parts.push(`silently break ${s} user${s>1?'s':''}`);if(p)parts.push(`prompt ${p} user${p>1?'s':''}`);const eff=parts.length?parts.join(', '):'have no measured impact';return `Enabling "${name}" would ${eff} (${total} user${total>1?'s':''} affected in this window).`;}
+function buildTechReport(policies,reportOnlyIds,findings){const byPolicy=new Map();
+  for(const f of findings){if(!byPolicy.has(f.policyId))byPolicy.set(f.policyId,[]);byPolicy.get(f.policyId).push(f);}
+  const entries=[];
+  for(const p of policies){if(!reportOnlyIds.has(p.id))continue;const fs=byPolicy.get(p.id)||[];if(!fs.length)continue;
+    const users=new Map();
+    for(const f of fs){if(!users.has(f.userPrincipalName))users.set(f.userPrincipalName,{user:f.userPrincipalName,userDisplayName:f.userDisplayName,severity:f.severity,apps:new Set(),clientApps:new Set(),devices:new Set(),interactiveCount:0,backgroundCount:0,count:0,reason:f.reason,remediation:f.remediation});
+      const u=users.get(f.userPrincipalName);u.count++;u.apps.add(f.app);u.clientApps.add(f.clientApp);if(f.device)u.devices.add(f.device);if(f.nonInteractive)u.backgroundCount++;else u.interactiveCount++;
+      if(SEV_RANK[f.severity]<SEV_RANK[u.severity]){u.severity=f.severity;u.reason=f.reason;u.remediation=f.remediation;}}
+    const userRows=[...users.values()].map(u=>{const apps=[...u.apps];return {user:u.user,userDisplayName:u.userDisplayName,severity:u.severity,apps,clientApps:[...u.clientApps],devices:[...u.devices],signInCount:u.count,backgroundSignIns:u.backgroundCount,interactiveSignIns:u.interactiveCount,reason:u.reason,remediation:u.remediation,line:techLine(u,apps,p.displayName)};}).sort((a,b)=>SEV_RANK[a.severity]-SEV_RANK[b.severity]||b.signInCount-a.signInCount);
+    const d=userRows.filter(u=>u.severity===SEV.DEFINITE).length,si=userRows.filter(u=>u.severity===SEV.SILENT).length,pr=userRows.filter(u=>u.severity===SEV.PROMPT).length;
+    entries.push({policyId:p.id,policyName:p.displayName,grant:grantLabel(p),usersAffected:userRows.length,definiteBlockUsers:d,silentBreakUsers:si,promptUsers:pr,worstSeverity:userRows[0]?.severity||null,headline:policyHeadline(p.displayName,d,si,pr,userRows.length),users:userRows});}
+  return entries.sort((a,b)=>SEV_RANK[a.worstSeverity??'prompt']-SEV_RANK[b.worstSeverity??'prompt']||b.usersAffected-a.usersAffected);}
 function groupBy(findings,keyFn,keyName){const map=new Map();
-  for(const f of findings){const k=keyFn(f);if(!map.has(k))map.set(k,{[keyName]:k,total:0,blocked:0,challenged:0,users:new Set(),apps:new Set(),policies:new Set(),clientApps:new Set(),firstSeen:f.when,lastSeen:f.when});
-    const g=map.get(k);g.total++;f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;g.users.add(f.userPrincipalName);g.apps.add(f.app);g.policies.add(f.policyName);g.clientApps.add(f.clientApp);
+  for(const f of findings){const k=keyFn(f);if(!map.has(k))map.set(k,{[keyName]:k,total:0,blocked:0,challenged:0,definite:0,silent:0,prompt:0,users:new Set(),apps:new Set(),policies:new Set(),clientApps:new Set(),firstSeen:f.when,lastSeen:f.when});
+    const g=map.get(k);g.total++;f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;if(f.severity===SEV.DEFINITE)g.definite++;else if(f.severity===SEV.SILENT)g.silent++;else g.prompt++;g.users.add(f.userPrincipalName);g.apps.add(f.app);g.policies.add(f.policyName);g.clientApps.add(f.clientApp);
     if(f.when&&f.when<g.firstSeen)g.firstSeen=f.when;if(f.when&&f.when>g.lastSeen)g.lastSeen=f.when;}
-  return [...map.values()].map(g=>({...g,users:[...g.users],apps:[...g.apps],policies:[...g.policies],clientApps:[...g.clientApps],userCount:g.users.size,appCount:g.apps.size})).sort((a,b)=>b.blocked-a.blocked||b.total-a.total);}
+  return [...map.values()].map(g=>({...g,users:[...g.users],apps:[...g.apps],policies:[...g.policies],clientApps:[...g.clientApps],userCount:g.users.size,appCount:g.apps.size})).sort((a,b)=>b.definite-a.definite||b.silent-a.silent||b.total-a.total);}
 function buildPolicyImpact(policies,reportOnlyIds,findings){const byId=new Map();
-  for(const f of findings){if(!byId.has(f.policyId))byId.set(f.policyId,{blocked:0,challenged:0,users:new Set(),apps:new Set()});const g=byId.get(f.policyId);f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;g.users.add(f.userPrincipalName);g.apps.add(f.app);}
-  const rows=[];for(const p of policies){if(!reportOnlyIds.has(p.id))continue;const g=byId.get(p.id)||{blocked:0,challenged:0,users:new Set(),apps:new Set()};const iu=g.users.size;
-    rows.push({policyId:p.id,policyName:p.displayName,state:p.state,grant:grantLabel(p),blockedSignIns:g.blocked,challengedSignIns:g.challenged,impactedUsers:iu,impactedApps:g.apps.size,
-      verdict:g.blocked===0&&g.challenged===0?'SAFE':g.blocked>0?'IMPACT':'FRICTION'});}
-  return rows.sort((a,b)=>b.blockedSignIns-a.blockedSignIns||b.challengedSignIns-a.challengedSignIns);}
+  for(const f of findings){if(!byId.has(f.policyId))byId.set(f.policyId,{blocked:0,challenged:0,definite:0,silent:0,prompt:0,users:new Set(),apps:new Set()});const g=byId.get(f.policyId);f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;if(f.severity===SEV.DEFINITE)g.definite++;else if(f.severity===SEV.SILENT)g.silent++;else g.prompt++;g.users.add(f.userPrincipalName);g.apps.add(f.app);}
+  const rows=[];for(const p of policies){if(!reportOnlyIds.has(p.id))continue;const g=byId.get(p.id)||{blocked:0,challenged:0,definite:0,silent:0,prompt:0,users:new Set(),apps:new Set()};const iu=g.users.size;
+    rows.push({policyId:p.id,policyName:p.displayName,state:p.state,grant:grantLabel(p),blockedSignIns:g.blocked,challengedSignIns:g.challenged,definiteBlocks:g.definite,silentBreaks:g.silent,prompts:g.prompt,impactedUsers:iu,impactedApps:g.apps.size,
+      verdict:g.definite===0&&g.silent===0&&g.prompt===0?'SAFE':g.definite>0?'IMPACT':g.silent>0?'SILENT':'FRICTION'});}
+  return rows.sort((a,b)=>b.definiteBlocks-a.definiteBlocks||b.silentBreaks-a.silentBreaks||b.prompts-a.prompts);}
 function buildLegacyAuthView(findings){const legacy=findings.filter(f=>f.legacyAuth&&f.impact===IMPACT.BLOCK);const byUser=groupBy(legacy,f=>f.userPrincipalName,'user');
   return {totalBlockedSignIns:legacy.length,affectedUsers:byUser.length,protocols:[...new Set(legacy.map(f=>f.clientApp))],users:byUser};}
-function buildSummary(policies,reportOnlyIds,findings,signIns){const blocked=findings.filter(f=>f.impact===IMPACT.BLOCK);const challenged=findings.filter(f=>f.impact===IMPACT.CHALLENGE);
-  const bu=new Set(blocked.map(f=>f.userPrincipalName));const cu=new Set(challenged.map(f=>f.userPrincipalName));const dates=signIns.map(s=>s.createdDateTime).filter(Boolean).sort();
+function buildSummary(policies,reportOnlyIds,findings,signIns){
+  const definite=findings.filter(f=>f.severity===SEV.DEFINITE),silent=findings.filter(f=>f.severity===SEV.SILENT),prompt=findings.filter(f=>f.severity===SEV.PROMPT);
+  const blocked=findings.filter(f=>f.impact===IMPACT.BLOCK);const challenged=findings.filter(f=>f.impact===IMPACT.CHALLENGE);
+  const bu=new Set(blocked.map(f=>f.userPrincipalName));const cu=new Set(challenged.map(f=>f.userPrincipalName));const su=new Set(silent.map(f=>f.userPrincipalName));const dates=signIns.map(s=>s.createdDateTime).filter(Boolean).sort();
+  let verdict;
+  if(definite.length>0||silent.length>0){const bits=[];if(definite.length)bits.push(`block ${definite.length} sign-in(s)`);if(silent.length)bits.push(`silently break ${silent.length} background/unfixable sign-in(s)`);verdict='HOLD';verdict={code:'HOLD',text:`Enforcing now would ${bits.join(' and ')} across ${new Set([...bu,...su]).size} user(s).`};}
+  else if(prompt.length>0)verdict={code:'REVIEW',text:`No hard blocks, but ${prompt.length} interactive sign-in(s) across ${cu.size} user(s) would get an extra prompt (usually MFA).`};
+  else verdict={code:'READY',text:'No sign-in in this window would be blocked. Safe to enforce.'};
   return {windowStart:dates[0]||null,windowEnd:dates[dates.length-1]||null,signInsAnalyzed:signIns.length,reportOnlyPolicies:reportOnlyIds.size,policiesTotal:policies.length,
+    definiteBlocks:definite.length,silentBreaks:silent.length,prompts:prompt.length,
+    usersDefinitelyBlocked:new Set(definite.map(f=>f.userPrincipalName)).size,usersSilentlyBroken:su.size,usersPrompted:new Set(prompt.map(f=>f.userPrincipalName)).size,
     wouldBeBlockedSignIns:blocked.length,wouldBeChallengedSignIns:challenged.length,usersBlocked:bu.size,usersChallenged:cu.size,
     usersChallengedOnly:[...cu].filter(u=>!bu.has(u)).length,legacyAuthBlockedSignIns:blocked.filter(f=>f.legacyAuth).length,
-    verdict:blocked.length===0?'READY':'HOLD'};}
+    verdictCode:verdict.code,verdictText:verdict.text};}
 
 /* ============================================================
    Live connection — MSAL + Microsoft Graph (delegated, GDAP)
@@ -252,12 +298,15 @@ async function fetchTenant(token,days){
   const since=new Date(Date.now()-days*864e5).toISOString();
   setStatus('<span class="spin"></span>Reading Conditional Access policies…');
   const pol=(await graphGetAll(`${GRAPH}/identity/conditionalAccess/policies`,token)).items;
+  // signInEventTypes only exists on the beta endpoint — v1.0 returns 400. Non-interactive
+  // sign-ins (background token refresh) are essential: a blocked one breaks a service silently.
+  const BETA='https://graph.microsoft.com/beta';
   const types=['interactiveUser','nonInteractiveUser','servicePrincipal'];
   let signIns=[],trunc=false;
   for(const t of types){
     setStatus(`<span class="spin"></span>Reading ${t} sign-ins…`);
     const filter=`createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
-    const url=`${GRAPH}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
+    const url=`${BETA}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
     try{const r=await graphGetAll(url,token);signIns.push(...r.items);trunc=trunc||r.truncated;}
     catch(e){/* some event types may be unavailable on lower SKUs; keep going */ console.warn(t,e.message);}
   }
@@ -316,24 +365,54 @@ $('#demo').onclick=()=>render(analyze(DEMO.policies,DEMO.signIns));
    ============================================================ */
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function pill(impact){return impact==='block'?'<span class="pill block">Would block</span>':'<span class="pill challenge">Would challenge</span>';}
+function sevPill(sev){if(sev==='definite')return '<span class="pill block">Blocked</span>';if(sev==='silent')return '<span class="pill block">Silent break</span>';return '<span class="pill challenge">Prompted</span>';}
 function render(r){
-  const s=r.summary;const ready=s.verdict==='READY';let html='';
-  html+=`<div class="verdict ${ready?'ready':'hold'}">${ready?'✓ READY TO ENFORCE':'⚠ HOLD — review before enforcing'}
-    <small>${ready?`No sign-in in this window would be blocked. Window: ${fmt(s.windowStart)} → ${fmt(s.windowEnd)}, ${s.signInsAnalyzed} sign-ins across ${s.reportOnlyPolicies} report-only policies.`
-    :`Enforcing now would block <b>${s.wouldBeBlockedSignIns}</b> sign-in(s) across <b>${s.usersBlocked}</b> user(s). Window: ${fmt(s.windowStart)} → ${fmt(s.windowEnd)}, ${s.signInsAnalyzed} sign-ins.`}</small></div>`;
+  const s=r.summary;const code=s.verdictCode;const ready=code==='READY';const review=code==='REVIEW';let html='';
+  const vcls=ready?'ready':review?'':'hold';const vstyle=review?' style="background:var(--orange)"':'';
+  const vhead=ready?'✓ READY TO ENFORCE':review?'◐ REVIEW — prompts only, no hard blocks':'⚠ HOLD — review before enforcing';
+  html+=`<div class="verdict ${vcls}"${vstyle}>${vhead}
+    <small>${esc(s.verdictText)} Window: ${fmt(s.windowStart)} → ${fmt(s.windowEnd)}, ${s.signInsAnalyzed} sign-ins across ${s.reportOnlyPolicies} report-only policies.</small></div>`;
   html+=`<div class="tiles">
-    ${tile(s.wouldBeBlockedSignIns,'sign-ins blocked',s.wouldBeBlockedSignIns?'bad':'ok')}
-    ${tile(s.usersBlocked,'users blocked',s.usersBlocked?'bad':'ok')}
-    ${tile(s.wouldBeChallengedSignIns,'extra challenges',s.wouldBeChallengedSignIns?'warn':'ok')}
-    ${tile(s.legacyAuthBlockedSignIns,'legacy-auth blocks',s.legacyAuthBlockedSignIns?'bad':'ok')}
-    ${tile(s.reportOnlyPolicies,'report-only policies','')}</div>`;
-  html+=`<h2>Policies about to be enforced</h2><div class="card"><table><thead><tr>
-    <th>Policy</th><th>Grant</th><th>Blocks</th><th>Challenges</th><th>Users</th><th>Verdict</th></tr></thead><tbody>`;
-  for(const p of r.byPolicy){const v=p.verdict;const cls=v==='SAFE'?'safe':v==='IMPACT'?'block':'challenge';
+    ${tile(s.definiteBlocks,'definite blocks',s.definiteBlocks?'bad':'ok')}
+    ${tile(s.silentBreaks,'silent breaks',s.silentBreaks?'bad':'ok')}
+    ${tile(s.prompts,'interactive prompts',s.prompts?'warn':'ok')}
+    ${tile(s.usersDefinitelyBlocked+s.usersSilentlyBroken,'users at risk',(s.usersDefinitelyBlocked+s.usersSilentlyBroken)?'bad':'ok')}
+    ${tile(s.legacyAuthBlockedSignIns,'legacy-auth blocks',s.legacyAuthBlockedSignIns?'bad':'ok')}</div>`;
+
+  // ---- The technician action report: what breaks, for whom, and the fix ----
+  html+=`<h2>What to fix before you enforce</h2>`;
+  if(!r.report.length){
+    html+=`<div class="card" style="border-left:4px solid var(--ok)"><p style="margin:0">Nothing to action — no report-only policy would block, silently break, or prompt any sign-in in this window.</p></div>`;
+  }
+  for(const e of r.report){
+    const worst=e.worstSeverity;const bcls=worst==='prompt'?'var(--orange)':'var(--bad)';
+    html+=`<div class="card" style="border-left:4px solid ${bcls}">
+      <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline">
+        <b style="color:var(--blue);font-size:15px">${esc(e.policyName)}</b>
+        <span class="muted" style="font-size:12.5px">${esc(e.grant)}</span></div>
+      <p style="margin:6px 0 10px">${esc(e.headline)}</p>
+      <table><thead><tr><th>User</th><th>Impact</th><th>What happens &amp; how to fix it</th></tr></thead><tbody>`;
+    for(const u of e.users){
+      const appList=u.apps.slice(0,3).map(a=>`<span class="tag">${esc(a)}</span>`).join('')+(u.apps.length>3?` +${u.apps.length-3}`:'');
+      const bg=u.backgroundSignIns>0?` <span class="tag legacy">${u.backgroundSignIns} background</span>`:'';
+      html+=`<tr>
+        <td><b>${esc(u.userDisplayName||u.user)}</b><br><span class="muted" style="font-size:11.5px">${esc(u.user)}</span></td>
+        <td>${sevPill(u.severity)}${bg}</td>
+        <td><div>${appList}</div>
+          <div style="margin-top:4px"><b>Why:</b> ${esc(u.reason)}</div>
+          <div style="margin-top:2px"><b>Fix:</b> ${esc(u.remediation)}</div></td></tr>`;
+    }
+    html+=`</tbody></table></div>`;
+  }
+
+  html+=`<h2>Every report-only policy — safe to enforce?</h2><div class="card"><table><thead><tr>
+    <th>Policy</th><th>Grant</th><th>Blocks</th><th>Silent</th><th>Prompts</th><th>Users</th><th>Verdict</th></tr></thead><tbody>`;
+  for(const p of r.byPolicy){const v=p.verdict;const cls=v==='SAFE'?'safe':v==='FRICTION'?'challenge':'block';
+    const label=v==='SAFE'?'Safe to enforce':v==='IMPACT'?'Would block':v==='SILENT'?'Silent break risk':'Adds friction';
     html+=`<tr><td><b>${esc(p.policyName)}</b></td><td class="muted">${esc(p.grant)}</td>
-      <td>${p.blockedSignIns||''}</td><td>${p.challengedSignIns||''}</td><td>${p.impactedUsers||''}</td>
-      <td><span class="pill ${cls}">${v==='SAFE'?'Safe to enforce':v==='IMPACT'?'Would block':'Adds friction'}</span></td></tr>`;}
-  if(!r.byPolicy.length)html+=`<tr><td colspan="6" class="muted">No report-only policies found.</td></tr>`;
+      <td>${p.definiteBlocks||''}</td><td>${p.silentBreaks||''}</td><td>${p.prompts||''}</td><td>${p.impactedUsers||''}</td>
+      <td><span class="pill ${cls}">${label}</span></td></tr>`;}
+  if(!r.byPolicy.length)html+=`<tr><td colspan="7" class="muted">No report-only policies found.</td></tr>`;
   html+=`</tbody></table></div>`;
   if(r.legacyAuth.totalBlockedSignIns){
     html+=`<h2>Legacy authentication exposure</h2><div class="card" style="border-left:4px solid var(--bad)">
@@ -362,7 +441,7 @@ function render(r){
       <td>${esc(x.userPrincipalName)}</td><td>${esc(x.app)}</td>
       <td>${x.legacyAuth?`<span class="tag legacy">${esc(x.clientApp)}</span>`:esc(x.clientApp)}</td>
       <td class="muted">${esc(x.device||'')}${x.deviceCompliant===false?' <span class="tag">non-compliant</span>':''}</td>
-      <td>${esc(x.policyName)}</td><td>${pill(x.impact)}</td></tr>`).join('');
+      <td>${esc(x.policyName)}</td><td>${sevPill(x.severity)}${x.nonInteractive?' <span class="tag legacy">bg</span>':''}</td></tr>`).join('');
     $('#count').textContent=`${shown.length} of ${rows.length} shown`;}
   draw();$('#q').oninput=e=>draw(e.target.value);$('#csv').onclick=()=>exportCsv(rows);
   $('#report').scrollIntoView({behavior:'smooth'});
@@ -371,7 +450,7 @@ function tile(n,l,cls){return `<div class="tile ${cls}"><div class="n">${n}</div
 function section(title,data,cols,rowFn,empty){let h=`<h2>${title}</h2><div class="card"><table><thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead><tbody>`;
   h+=data.length?data.map(rowFn).join(''):`<tr><td colspan="${cols.length}" class="muted">${empty}</td></tr>`;return h+`</tbody></table></div>`;}
 function fmt(d){if(!d)return '';const t=new Date(d);return isNaN(t)?d:t.toISOString().slice(0,16).replace('T',' ');}
-function exportCsv(rows){const cols=['when','userPrincipalName','app','clientApp','legacyAuth','device','deviceCompliant','location','ip','policyName','result','impact','reason'];
+function exportCsv(rows){const cols=['when','userPrincipalName','app','clientApp','legacyAuth','interactive','device','deviceCompliant','location','ip','policyName','result','impact','severity','reason','remediation'];
   const csv=[cols.join(',')].concat(rows.map(r=>cols.map(c=>`"${String(r[c]??'').replace(/"/g,'""')}"`).join(','))).join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download='accessforecast-impacted-signins.csv';a.click();}
 
@@ -388,7 +467,8 @@ const DEMO={
   {id:'si-2',createdDateTime:'2026-07-20T09:30:00Z',userPrincipalName:'liam@client.ie',userDisplayName:'Liam Byrne',appDisplayName:'Microsoft Teams',clientAppUsed:'Browser',ipAddress:'89.1.1.2',location:{city:'Cork',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'Windows',browser:'Edge',isCompliant:false,isManaged:false},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlyFailure'}]},
   {id:'si-3',createdDateTime:'2026-07-21T09:00:00Z',userPrincipalName:'liam@client.ie',userDisplayName:'Liam Byrne',appDisplayName:'Microsoft Teams',clientAppUsed:'Browser',ipAddress:'89.1.1.2',location:{city:'Cork',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'Windows',browser:'Edge',isCompliant:true,isManaged:true},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlySuccess'}]},
   {id:'si-4',createdDateTime:'2026-07-22T14:15:00Z',userPrincipalName:'joan@client.ie',userDisplayName:'Joan Murphy',appDisplayName:'Office 365 Exchange Online',clientAppUsed:'Mobile Apps and Desktop clients',ipAddress:'89.1.1.1',location:{city:'Dublin',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'iOS',isCompliant:false,isManaged:false,displayName:'Joan-iPhone'},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-compliant-device',displayName:'Require compliant device for Exchange',enforcedGrantControls:['CompliantDevice'],result:'reportOnlyFailure'}]},
-  {id:'si-5',createdDateTime:'2026-07-22T16:00:00Z',userPrincipalName:'aoife@client.ie',userDisplayName:'Aoife Kelly',appDisplayName:'Salesforce',clientAppUsed:'Browser',ipAddress:'89.1.1.3',location:{city:'Galway',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'MacOS',browser:'Safari',isCompliant:false,isManaged:false},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlyInterrupted'}]}]
+  {id:'si-5',createdDateTime:'2026-07-22T16:00:00Z',userPrincipalName:'aoife@client.ie',userDisplayName:'Aoife Kelly',appDisplayName:'Salesforce',clientAppUsed:'Browser',isInteractive:true,ipAddress:'89.1.1.3',location:{city:'Galway',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'MacOS',browser:'Safari',isCompliant:false,isManaged:false},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlyInterrupted'}]},
+  {id:'si-6',createdDateTime:'2026-07-23T02:10:00Z',userPrincipalName:'aoife@client.ie',userDisplayName:'Aoife Kelly',appDisplayName:'OneDrive SyncEngine',clientAppUsed:'Mobile Apps and Desktop clients',isInteractive:false,ipAddress:'89.1.1.3',location:{city:'Galway',countryOrRegion:'IE'},deviceDetail:{operatingSystem:'MacOS',isCompliant:false,isManaged:false,displayName:'Aoife-MBP'},status:{errorCode:0},appliedConditionalAccessPolicies:[{id:'pol-require-mfa',displayName:'Require MFA for all users',enforcedGrantControls:['Mfa'],result:'reportOnlyInterrupted'}]}]
 };
 </script>
 </body>

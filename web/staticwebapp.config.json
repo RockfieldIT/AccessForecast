@@ -1,13 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/staticwebapp.config.json",
   "routes": [
-    { "route": "/api/*", "allowedRoles": ["authenticated"] },
-    { "route": "/*", "allowedRoles": ["authenticated"] }
+    { "route": "/api/*", "allowedRoles": ["staff"] },
+    { "route": "/*", "allowedRoles": ["staff"] }
   ],
   "responseOverrides": {
     "401": { "redirect": "/.auth/login/aad", "statusCode": 302 }
   },
-  "navigationFallback": { "rewrite": "/index.html" },
   "auth": {
     "identityProviders": {
       "azureActiveDirectory": {
@@ -18,5 +17,6 @@
         }
       }
     }
-  }
+  },
+  "_comment": "Gates the whole app + API to Rockfield staff (assign the 'staff' role to your team). Client sign-in data is only reachable behind this."
 }

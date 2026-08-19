@@ -44,9 +44,11 @@ Everything below is ordered. Do them in sequence.
    - Supported account types: **Accounts in any organizational directory** (multitenant).
    - No redirect URI needed (this is app-only, not a browser sign-in).
 2. **API permissions** → Add → Microsoft Graph → **Application permissions**:
-   - `Policy.Read.All`
-   - `AuditLog.Read.All`
-   - `Directory.Read.All`
+   - `Policy.Read.All` — read CA policies (needed in every client)
+   - `AuditLog.Read.All` — read sign-in logs (needed in every client)
+   - `Directory.Read.All` — resolve names (needed in every client)
+   - `DelegatedAdminRelationship.Read.All` — enumerate your GDAP clients (needed **only in your
+     partner tenant**, for auto-discovery)
    Then **Grant admin consent** (this consents in *your* tenant; client tenants come in Step 2).
 3. **Certificates & secrets** → **New client secret**. Copy the value now — you'll put it
    in Key Vault in Step 5. (Prefer a certificate for production — see Hardening.)
@@ -73,18 +75,16 @@ Sign in as an admin for that client and accept. This creates the SP and grants t
 
 Either way, the result is: the app can now get an app-only token in that tenant.
 
-## Step 3 — Build the tenant list
+## Step 3 — Tenant list is automatic (nothing to maintain)
 
-The backend reads the clients to scan from an `AF_TENANTS` setting — a JSON array:
-```json
-[
-  { "id": "11111111-1111-1111-1111-111111111111", "name": "Walls Mechanical" },
-  { "id": "22222222-2222-2222-2222-222222222222", "name": "Terra Nutri Tech" }
-]
-```
-Keep it minified on one line for the app setting (Step 6). You can export this straight from
-CIPP's tenant list or Partner Center. (Future option: auto-discover via
-`/tenantRelationships/delegatedAdminRelationships` — left out here to keep permissions minimal.)
+There is **no list to keep**. The backend enumerates every client from your **active GDAP
+relationships** (`/tenantRelationships/delegatedAdminRelationships`, read in your partner tenant).
+Onboard a client in CIPP/GDAP and it appears in AccessForecast on the next call — no config change,
+no redeploy. This is what makes rollout genuinely unattended.
+
+The `AF_TENANTS` app setting is an **optional override**, and only for two cases: (a) you want to
+limit the tool to a subset of clients, or (b) you want to include a tenant you reach by direct
+consent rather than GDAP. Leave it unset for the normal "all my clients, automatically" behaviour.
 
 ## Step 4 — Provision Azure
 
