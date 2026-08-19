@@ -64,10 +64,14 @@ export function getPolicies(token) {
 export async function getSignIns(token, days = 7, user = null) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
   const userClause = user ? ` and userPrincipalName eq '${user.replace(/'/g, "''")}'` : '';
+  // Page caps bound worst-case work. On the standalone Function App (10-min timeout)
+  // these can be generous; on SWA managed functions (45s) keep them low. Override per
+  // deployment with AF_MAXPAGES_INTERACTIVE / _NONINTERACTIVE / _SP (each page = up to 1000).
+  const cap = (name, def) => Math.max(1, Number(process.env[name] || def));
   const plan = [
-    { t: 'interactiveUser', maxPages: 50 },
-    { t: 'nonInteractiveUser', maxPages: 6 },
-    { t: 'servicePrincipal', maxPages: 6 },
+    { t: 'interactiveUser', maxPages: cap('AF_MAXPAGES_INTERACTIVE', 60) },
+    { t: 'nonInteractiveUser', maxPages: cap('AF_MAXPAGES_NONINTERACTIVE', 60) },
+    { t: 'servicePrincipal', maxPages: cap('AF_MAXPAGES_SP', 15) },
   ];
   const errors = [];
   const pull = async ({ t, maxPages }) => {
