@@ -10,7 +10,8 @@ app.http('getReportOnlyImpact', {
     const days = Number(request.query.get('days') || 7);
     if (!tenantId) return { status: 400, jsonBody: { error: 'tenantId required' } };
     try {
-      const { policies, signIns } = await fetchTenantData(tenantId, days);
+      const user = request.query.get('user');
+      const { policies, signIns } = await fetchTenantData(tenantId, days, user);
       const forecast = analyze(policies, signIns);
       return { jsonBody: { tenantId, days, signInsAnalyzed: signIns.length, forecast } };
     } catch (err) {
