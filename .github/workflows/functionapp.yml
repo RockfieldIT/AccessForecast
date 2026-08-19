@@ -1,0 +1,48 @@
+# Deploys the AccessForecast API (the api/ folder) to a standalone Azure Function App.
+# This REPLACES the Static Web App's managed-functions API, removing the 45-second
+# timeout. The SWA still fronts the UI + auth and is "linked" to this Function App
+# as its backend (see docs/DEPLOYMENT-FUNCTIONAPP.md).
+#
+# One-time setup:
+#   1. Create the Function App (Linux, Node 20) — see the doc.
+#   2. Function App -> Overview -> "Get publish profile" (downloads an XML file).
+#   3. GitHub repo -> Settings -> Secrets and variables -> Actions -> New secret:
+#        Name:  AZURE_FUNCTIONAPP_PUBLISH_PROFILE
+#        Value: paste the entire contents of that XML file.
+#   4. Set FUNCTIONAPP_NAME below to your Function App's name.
+
+name: Deploy API to Function App
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - '.github/workflows/functionapp.yml'
+  workflow_dispatch:
+
+env:
+  FUNCTIONAPP_NAME: rf-accessforecast-func   # <-- set to your Function App name
+  NODE_VERSION: '20.x'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install API dependencies
+        run: npm install --omit=dev
+        working-directory: ./api
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.FUNCTIONAPP_NAME }}
+          package: ./api
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
