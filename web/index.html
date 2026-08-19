@@ -161,23 +161,24 @@
    ============================================================ */
 const REPORT_ONLY_STATE='enabledForReportingButNotEnforced';
 const IMPACT={BLOCK:'block',CHALLENGE:'challenge',NONE:'none'};
-const SEV={DEFINITE:'definite',SILENT:'silent',PROMPT:'prompt'};
-const SEV_RANK={definite:0,silent:1,prompt:2};
-const DEVICE_OR_APP=new Set(['compliantdevice','domainjoineddevice','approvedapplication','compliantapplication']);
+const SEV={DEFINITE:'definite',SILENT:'silent',PROMPT:'prompt',VERIFY:'verify'};
+const SEV_RANK={definite:0,silent:1,prompt:2,verify:3};
 function classifyResult(r){switch(r){case 'reportOnlyFailure':return IMPACT.BLOCK;case 'failure':return IMPACT.BLOCK;case 'reportOnlyInterrupted':return IMPACT.CHALLENGE;default:return IMPACT.NONE;}}
 function describeControls(c){if(!c||!c.length)return 'Grant controls not recorded';const m={block:'Block access',mfa:'Require multifactor authentication',compliantdevice:'Require compliant device',domainjoineddevice:'Require Hybrid Azure AD joined device',approvedapplication:'Require approved client app',compliantapplication:'Require app protection policy',passwordchange:'Require password change'};return c.map(x=>m[String(x).toLowerCase()]||x).join(' AND ');}
 function grantLabel(policy){const b=policy?.grantControls?.builtInControls||[];if(b.length)return describeControls(b);const as=policy?.grantControls?.authenticationStrength?.displayName;if(as)return `Require authentication strength: ${as}`;if(policy?.sessionControls)return 'Session controls';return 'Grant controls not recorded';}
 function isLegacyAuth(c){if(!c)return false;return !['Browser','Mobile Apps and Desktop clients'].includes(c);}
-function classifySeverity(impact,controlSet,nonInteractive){if(impact===IMPACT.BLOCK)return SEV.DEFINITE;if(nonInteractive)return SEV.SILENT;for(const c of controlSet)if(DEVICE_OR_APP.has(c))return SEV.SILENT;return SEV.PROMPT;}
+function classifySeverity(impact,nonInteractive){if(impact===IMPACT.BLOCK)return nonInteractive?SEV.SILENT:SEV.DEFINITE;return nonInteractive?SEV.VERIFY:SEV.PROMPT;}
 function suggestRemediation(f){const cs=f.controlSet;
-  if(cs.has('block')){if(f.legacyAuth)return `Move this mailbox/app off legacy authentication (${f.clientApp}). Switch to modern OAuth (e.g. new Outlook / Graph) and retire basic-auth protocols (IMAP/POP/SMTP AUTH). If a service account genuinely needs it, exclude it from the policy.`;return `This policy is meant to deny this sign-in. If it should be allowed, exclude this user/app or narrow the policy's conditions; otherwise it's working as intended.`;}
-  if(cs.has('compliantdevice'))return `Enrol ${f.device?`"${f.device}"`:'the device'} in Intune and bring it to compliant (or Hybrid-join it), then re-sign-in. If it can't be managed, exclude the device/user or scope the policy off this app.`;
-  if(cs.has('domainjoineddevice'))return `Hybrid Azure AD join ${f.device?`"${f.device}"`:'the device'} (or switch the control to "compliant device" via Intune). Unmanaged/personal devices can't satisfy this and will be blocked.`;
-  if(cs.has('approvedapplication')||cs.has('compliantapplication'))return `Use an approved app with an app-protection policy (e.g. Outlook / Teams mobile) — the current client (${f.clientApp}) can't satisfy this.${f.nonInteractive?' This is a background sign-in, so it will fail silently until the client is switched.':''}`;
-  if(cs.has('mfa')||f.authStrength){const method=f.authStrength?`a method that meets the "${f.authStrength}" strength (e.g. Microsoft Authenticator push/passkey or FIDO2)`:`an MFA method (Microsoft Authenticator or a FIDO2 key)`;
-    if(f.nonInteractive)return `Register ${method} for this user and have them complete MFA once interactively. This is a BACKGROUND sign-in — it can't prompt, so the service (${f.app}) will silently stop until a fresh, MFA-satisfied token is issued. Also confirm the client supports modern auth.`;
-    return `Have the user register ${method} and complete MFA once. After that this prompt clears on its own.`;}
-  return `Review this policy's grant controls against how ${f.app} signs in; exclude the user/app if the control can't be met.`;}
+  const mfaLike=(cs.has('mfa')||f.authStrength)&&!cs.has('block')&&!cs.has('compliantdevice')&&!cs.has('domainjoineddevice')&&!cs.has('approvedapplication')&&!cs.has('compliantapplication');
+  if(mfaLike){const method=f.authStrength?`a method that meets the "${f.authStrength}" strength (e.g. Microsoft Authenticator push/passkey or FIDO2)`:`an MFA method (Microsoft Authenticator or a FIDO2 key)`;
+    if(f.severity===SEV.VERIFY)return `Likely a report-only false positive — no action needed in most cases. This is a background (non-interactive) sign-in, and its refresh token almost always already carries the MFA claim from the user's last interactive sign-in, so enforcing won't stop it. To be sure, confirm the user can satisfy ${method} interactively; only a user who has never met this strength is genuinely at risk.`;
+    return `Have the user register ${method} and complete MFA once interactively. After that the prompt clears on its own for the browser and modern-auth clients.`;}
+  const silentNote=f.nonInteractive?' This is a background sign-in, so it fails with no prompt — the service just stops until this is fixed.':'';
+  if(cs.has('block')){if(f.legacyAuth)return `Move this mailbox/app off legacy authentication (${f.clientApp}). Switch to modern OAuth (e.g. new Outlook / Graph) and retire basic-auth protocols (IMAP/POP/SMTP AUTH). If a service account genuinely needs it, exclude it from the policy.${silentNote}`;return `This policy is meant to deny this sign-in. If it should be allowed, exclude this user/app or narrow the policy's conditions; otherwise no fix is needed — it's working as intended.${silentNote}`;}
+  if(cs.has('compliantdevice'))return `Enrol ${f.device?`"${f.device}"`:'the device'} in Intune and bring it to compliant (or Hybrid-join it), then re-sign-in. If it can't be managed, exclude the device/user or scope the policy off this app.${silentNote}`;
+  if(cs.has('domainjoineddevice'))return `Hybrid Azure AD join ${f.device?`"${f.device}"`:'the device'} (or switch the control to "compliant device" via Intune). Unmanaged/personal devices can't satisfy this and will be blocked.${silentNote}`;
+  if(cs.has('approvedapplication')||cs.has('compliantapplication'))return `Use an approved app with an app-protection policy (e.g. Outlook / Teams mobile) — the current client (${f.clientApp}) can't satisfy this.${silentNote}`;
+  return `Review this policy's grant controls against how ${f.app} signs in; exclude the user/app if the control can't be met.${silentNote}`;}
 function analyze(policies,signIns,options={}){
   const reportOnlyOnly=options.reportOnlyPoliciesOnly!==false;
   const policyById=new Map();(policies||[]).forEach(p=>policyById.set(p.id,p));
@@ -199,8 +200,8 @@ function analyze(policies,signIns,options={}){
       const device=s.deviceDetail?.displayName||s.deviceDetail?.operatingSystem||null;
       const app=s.appDisplayName||s.resourceDisplayName||'(unknown app)';
       const clientApp=s.clientAppUsed||'(unknown)';
-      const severity=classifySeverity(impact,controlSet,nonInteractive);
-      const remediation=suggestRemediation({controlSet,legacyAuth,clientApp,nonInteractive,device,authStrength,app});
+      const severity=classifySeverity(impact,nonInteractive);
+      const remediation=suggestRemediation({controlSet,severity,legacyAuth,clientApp,nonInteractive,device,authStrength,app});
       findings.push({signInId:s.id,when:s.createdDateTime,
         userPrincipalName:s.userPrincipalName||s.userDisplayName||'(unknown user)',
         userDisplayName:s.userDisplayName||null,
@@ -227,9 +228,10 @@ function analyze(policies,signIns,options={}){
 }
 function techLine(u,apps,policyName){const appList=apps.slice(0,3).join(', ')+(apps.length>3?` +${apps.length-3} more`:'');const who=u.userDisplayName||u.user;
   if(u.severity===SEV.DEFINITE)return `${who} will be BLOCKED from ${appList} when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;
-  if(u.severity===SEV.SILENT){const bg=u.backgroundCount>0?`background sign-ins (${appList}) will fail silently — the service stops with no prompt`:`${appList} will be interrupted with something the user can't satisfy in the moment`;return `${who}: ${bg} when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;}
+  if(u.severity===SEV.SILENT)return `${who}: background sign-ins (${appList}) will FAIL SILENTLY — the service stops with no prompt — when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;
+  if(u.severity===SEV.VERIFY)return `${who}: ${u.backgroundCount} background sign-in(s) (${appList}) are flagged under "${policyName}", but these are most likely report-only false positives (the token already carries the claim) — spot-check, don't act. ${u.remediation}`;
   return `${who} will be prompted (${appList}) when "${policyName}" is enabled — ${u.reason}. Fix: ${u.remediation}`;}
-function policyHeadline(name,d,s,p,total){const parts=[];if(d)parts.push(`block ${d} user${d>1?'s':''}`);if(s)parts.push(`silently break ${s} user${s>1?'s':''}`);if(p)parts.push(`prompt ${p} user${p>1?'s':''}`);const eff=parts.length?parts.join(', '):'have no measured impact';return `Enabling "${name}" would ${eff} (${total} user${total>1?'s':''} affected in this window).`;}
+function policyHeadline(name,d,s,p,v,total){const parts=[];if(d)parts.push(`block ${d} user${d>1?'s':''}`);if(s)parts.push(`silently break ${s} user${s>1?'s':''}`);if(p)parts.push(`prompt ${p} user${p>1?'s':''}`);if(v)parts.push(`flag ${v} user${v>1?'s':''} to verify`);const eff=parts.length?parts.join(', '):'have no measured impact';return `Enabling "${name}" would ${eff} (${total} user${total>1?'s':''} affected in this window).`;}
 function buildTechReport(policies,reportOnlyIds,findings){const byPolicy=new Map();
   for(const f of findings){if(!byPolicy.has(f.policyId))byPolicy.set(f.policyId,[]);byPolicy.get(f.policyId).push(f);}
   const entries=[];
@@ -239,33 +241,35 @@ function buildTechReport(policies,reportOnlyIds,findings){const byPolicy=new Map
       const u=users.get(f.userPrincipalName);u.count++;u.apps.add(f.app);u.clientApps.add(f.clientApp);if(f.device)u.devices.add(f.device);if(f.nonInteractive)u.backgroundCount++;else u.interactiveCount++;
       if(SEV_RANK[f.severity]<SEV_RANK[u.severity]){u.severity=f.severity;u.reason=f.reason;u.remediation=f.remediation;}}
     const userRows=[...users.values()].map(u=>{const apps=[...u.apps];return {user:u.user,userDisplayName:u.userDisplayName,severity:u.severity,apps,clientApps:[...u.clientApps],devices:[...u.devices],signInCount:u.count,backgroundSignIns:u.backgroundCount,interactiveSignIns:u.interactiveCount,reason:u.reason,remediation:u.remediation,line:techLine(u,apps,p.displayName)};}).sort((a,b)=>SEV_RANK[a.severity]-SEV_RANK[b.severity]||b.signInCount-a.signInCount);
-    const d=userRows.filter(u=>u.severity===SEV.DEFINITE).length,si=userRows.filter(u=>u.severity===SEV.SILENT).length,pr=userRows.filter(u=>u.severity===SEV.PROMPT).length;
-    entries.push({policyId:p.id,policyName:p.displayName,grant:grantLabel(p),usersAffected:userRows.length,definiteBlockUsers:d,silentBreakUsers:si,promptUsers:pr,worstSeverity:userRows[0]?.severity||null,headline:policyHeadline(p.displayName,d,si,pr,userRows.length),users:userRows});}
-  return entries.sort((a,b)=>SEV_RANK[a.worstSeverity??'prompt']-SEV_RANK[b.worstSeverity??'prompt']||b.usersAffected-a.usersAffected);}
+    const d=userRows.filter(u=>u.severity===SEV.DEFINITE).length,si=userRows.filter(u=>u.severity===SEV.SILENT).length,pr=userRows.filter(u=>u.severity===SEV.PROMPT).length,vf=userRows.filter(u=>u.severity===SEV.VERIFY).length;
+    entries.push({policyId:p.id,policyName:p.displayName,grant:grantLabel(p),usersAffected:userRows.length,definiteBlockUsers:d,silentBreakUsers:si,promptUsers:pr,verifyUsers:vf,worstSeverity:userRows[0]?.severity||null,headline:policyHeadline(p.displayName,d,si,pr,vf,userRows.length),users:userRows});}
+  return entries.sort((a,b)=>SEV_RANK[a.worstSeverity??'verify']-SEV_RANK[b.worstSeverity??'verify']||b.usersAffected-a.usersAffected);}
 function groupBy(findings,keyFn,keyName){const map=new Map();
-  for(const f of findings){const k=keyFn(f);if(!map.has(k))map.set(k,{[keyName]:k,total:0,blocked:0,challenged:0,definite:0,silent:0,prompt:0,users:new Set(),apps:new Set(),policies:new Set(),clientApps:new Set(),firstSeen:f.when,lastSeen:f.when});
-    const g=map.get(k);g.total++;f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;if(f.severity===SEV.DEFINITE)g.definite++;else if(f.severity===SEV.SILENT)g.silent++;else g.prompt++;g.users.add(f.userPrincipalName);g.apps.add(f.app);g.policies.add(f.policyName);g.clientApps.add(f.clientApp);
+  for(const f of findings){const k=keyFn(f);if(!map.has(k))map.set(k,{[keyName]:k,total:0,blocked:0,challenged:0,definite:0,silent:0,prompt:0,verify:0,users:new Set(),apps:new Set(),policies:new Set(),clientApps:new Set(),firstSeen:f.when,lastSeen:f.when});
+    const g=map.get(k);g.total++;f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;if(f.severity===SEV.DEFINITE)g.definite++;else if(f.severity===SEV.SILENT)g.silent++;else if(f.severity===SEV.VERIFY)g.verify++;else g.prompt++;g.users.add(f.userPrincipalName);g.apps.add(f.app);g.policies.add(f.policyName);g.clientApps.add(f.clientApp);
     if(f.when&&f.when<g.firstSeen)g.firstSeen=f.when;if(f.when&&f.when>g.lastSeen)g.lastSeen=f.when;}
   return [...map.values()].map(g=>({...g,users:[...g.users],apps:[...g.apps],policies:[...g.policies],clientApps:[...g.clientApps],userCount:g.users.size,appCount:g.apps.size})).sort((a,b)=>b.definite-a.definite||b.silent-a.silent||b.total-a.total);}
 function buildPolicyImpact(policies,reportOnlyIds,findings){const byId=new Map();
-  for(const f of findings){if(!byId.has(f.policyId))byId.set(f.policyId,{blocked:0,challenged:0,definite:0,silent:0,prompt:0,users:new Set(),apps:new Set()});const g=byId.get(f.policyId);f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;if(f.severity===SEV.DEFINITE)g.definite++;else if(f.severity===SEV.SILENT)g.silent++;else g.prompt++;g.users.add(f.userPrincipalName);g.apps.add(f.app);}
-  const rows=[];for(const p of policies){if(!reportOnlyIds.has(p.id))continue;const g=byId.get(p.id)||{blocked:0,challenged:0,definite:0,silent:0,prompt:0,users:new Set(),apps:new Set()};const iu=g.users.size;
-    rows.push({policyId:p.id,policyName:p.displayName,state:p.state,grant:grantLabel(p),blockedSignIns:g.blocked,challengedSignIns:g.challenged,definiteBlocks:g.definite,silentBreaks:g.silent,prompts:g.prompt,impactedUsers:iu,impactedApps:g.apps.size,
-      verdict:g.definite===0&&g.silent===0&&g.prompt===0?'SAFE':g.definite>0?'IMPACT':g.silent>0?'SILENT':'FRICTION'});}
-  return rows.sort((a,b)=>b.definiteBlocks-a.definiteBlocks||b.silentBreaks-a.silentBreaks||b.prompts-a.prompts);}
+  for(const f of findings){if(!byId.has(f.policyId))byId.set(f.policyId,{blocked:0,challenged:0,definite:0,silent:0,prompt:0,verify:0,users:new Set(),apps:new Set()});const g=byId.get(f.policyId);f.impact===IMPACT.BLOCK?g.blocked++:g.challenged++;if(f.severity===SEV.DEFINITE)g.definite++;else if(f.severity===SEV.SILENT)g.silent++;else if(f.severity===SEV.VERIFY)g.verify++;else g.prompt++;g.users.add(f.userPrincipalName);g.apps.add(f.app);}
+  const rows=[];for(const p of policies){if(!reportOnlyIds.has(p.id))continue;const g=byId.get(p.id)||{blocked:0,challenged:0,definite:0,silent:0,prompt:0,verify:0,users:new Set(),apps:new Set()};const iu=g.users.size;
+    rows.push({policyId:p.id,policyName:p.displayName,state:p.state,grant:grantLabel(p),blockedSignIns:g.blocked,challengedSignIns:g.challenged,definiteBlocks:g.definite,silentBreaks:g.silent,prompts:g.prompt,verifyFlags:g.verify,impactedUsers:iu,impactedApps:g.apps.size,
+      verdict:g.definite===0&&g.silent===0&&g.prompt===0&&g.verify===0?'SAFE':g.definite>0?'IMPACT':g.silent>0?'SILENT':g.prompt>0?'FRICTION':'VERIFY'});}
+  return rows.sort((a,b)=>b.definiteBlocks-a.definiteBlocks||b.silentBreaks-a.silentBreaks||b.prompts-a.prompts||b.verifyFlags-a.verifyFlags);}
 function buildLegacyAuthView(findings){const legacy=findings.filter(f=>f.legacyAuth&&f.impact===IMPACT.BLOCK);const byUser=groupBy(legacy,f=>f.userPrincipalName,'user');
   return {totalBlockedSignIns:legacy.length,affectedUsers:byUser.length,protocols:[...new Set(legacy.map(f=>f.clientApp))],users:byUser};}
 function buildSummary(policies,reportOnlyIds,findings,signIns){
-  const definite=findings.filter(f=>f.severity===SEV.DEFINITE),silent=findings.filter(f=>f.severity===SEV.SILENT),prompt=findings.filter(f=>f.severity===SEV.PROMPT);
+  const definite=findings.filter(f=>f.severity===SEV.DEFINITE),silent=findings.filter(f=>f.severity===SEV.SILENT),prompt=findings.filter(f=>f.severity===SEV.PROMPT),verify=findings.filter(f=>f.severity===SEV.VERIFY);
   const blocked=findings.filter(f=>f.impact===IMPACT.BLOCK);const challenged=findings.filter(f=>f.impact===IMPACT.CHALLENGE);
-  const bu=new Set(blocked.map(f=>f.userPrincipalName));const cu=new Set(challenged.map(f=>f.userPrincipalName));const su=new Set(silent.map(f=>f.userPrincipalName));const dates=signIns.map(s=>s.createdDateTime).filter(Boolean).sort();
+  const bu=new Set(blocked.map(f=>f.userPrincipalName));const cu=new Set(challenged.map(f=>f.userPrincipalName));
+  const du=new Set(definite.map(f=>f.userPrincipalName));const su=new Set(silent.map(f=>f.userPrincipalName));const pu=new Set(prompt.map(f=>f.userPrincipalName));const vu=new Set(verify.map(f=>f.userPrincipalName));
+  const dates=signIns.map(s=>s.createdDateTime).filter(Boolean).sort();
   let verdict;
-  if(definite.length>0||silent.length>0){const bits=[];if(definite.length)bits.push(`block ${definite.length} sign-in(s)`);if(silent.length)bits.push(`silently break ${silent.length} background/unfixable sign-in(s)`);verdict='HOLD';verdict={code:'HOLD',text:`Enforcing now would ${bits.join(' and ')} across ${new Set([...bu,...su]).size} user(s).`};}
-  else if(prompt.length>0)verdict={code:'REVIEW',text:`No hard blocks, but ${prompt.length} interactive sign-in(s) across ${cu.size} user(s) would get an extra prompt (usually MFA).`};
+  if(definite.length>0||silent.length>0){const bits=[];if(definite.length)bits.push(`block ${definite.length} interactive sign-in(s)`);if(silent.length)bits.push(`silently break ${silent.length} background sign-in(s)`);verdict={code:'HOLD',text:`Enforcing now would ${bits.join(' and ')} across ${new Set([...du,...su]).size} user(s). Review before flipping to On.`};}
+  else if(prompt.length>0||verify.length>0){const bits=[];if(prompt.length)bits.push(`${prompt.length} interactive prompt(s) across ${pu.size} user(s)`);if(verify.length)bits.push(`${verify.length} background sign-in(s) to spot-check across ${vu.size} user(s) (likely report-only false positives)`);verdict={code:'REVIEW',text:`No hard blocks. ${bits.join('; ')}. Safe to enforce once verified.`};}
   else verdict={code:'READY',text:'No sign-in in this window would be blocked. Safe to enforce.'};
   return {windowStart:dates[0]||null,windowEnd:dates[dates.length-1]||null,signInsAnalyzed:signIns.length,reportOnlyPolicies:reportOnlyIds.size,policiesTotal:policies.length,
-    definiteBlocks:definite.length,silentBreaks:silent.length,prompts:prompt.length,
-    usersDefinitelyBlocked:new Set(definite.map(f=>f.userPrincipalName)).size,usersSilentlyBroken:su.size,usersPrompted:new Set(prompt.map(f=>f.userPrincipalName)).size,
+    definiteBlocks:definite.length,silentBreaks:silent.length,prompts:prompt.length,verifyFlags:verify.length,
+    usersDefinitelyBlocked:du.size,usersSilentlyBroken:su.size,usersPrompted:pu.size,usersToVerify:vu.size,
     wouldBeBlockedSignIns:blocked.length,wouldBeChallengedSignIns:challenged.length,usersBlocked:bu.size,usersChallenged:cu.size,
     usersChallengedOnly:[...cu].filter(u=>!bu.has(u)).length,legacyAuthBlockedSignIns:blocked.filter(f=>f.legacyAuth).length,
     verdictCode:verdict.code,verdictText:verdict.text};}
@@ -365,7 +369,7 @@ $('#demo').onclick=()=>render(analyze(DEMO.policies,DEMO.signIns));
    ============================================================ */
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function pill(impact){return impact==='block'?'<span class="pill block">Would block</span>':'<span class="pill challenge">Would challenge</span>';}
-function sevPill(sev){if(sev==='definite')return '<span class="pill block">Blocked</span>';if(sev==='silent')return '<span class="pill block">Silent break</span>';return '<span class="pill challenge">Prompted</span>';}
+function sevPill(sev){if(sev==='definite')return '<span class="pill block">Blocked</span>';if(sev==='silent')return '<span class="pill block">Silent break</span>';if(sev==='verify')return '<span class="pill safe">Verify</span>';return '<span class="pill challenge">Prompted</span>';}
 function render(r){
   const s=r.summary;const code=s.verdictCode;const ready=code==='READY';const review=code==='REVIEW';let html='';
   const vcls=ready?'ready':review?'':'hold';const vstyle=review?' style="background:var(--orange)"':'';
@@ -376,8 +380,8 @@ function render(r){
     ${tile(s.definiteBlocks,'definite blocks',s.definiteBlocks?'bad':'ok')}
     ${tile(s.silentBreaks,'silent breaks',s.silentBreaks?'bad':'ok')}
     ${tile(s.prompts,'interactive prompts',s.prompts?'warn':'ok')}
-    ${tile(s.usersDefinitelyBlocked+s.usersSilentlyBroken,'users at risk',(s.usersDefinitelyBlocked+s.usersSilentlyBroken)?'bad':'ok')}
-    ${tile(s.legacyAuthBlockedSignIns,'legacy-auth blocks',s.legacyAuthBlockedSignIns?'bad':'ok')}</div>`;
+    ${tile(s.verifyFlags,'to verify (likely false +ve)',s.verifyFlags?'warn':'ok')}
+    ${tile(s.usersDefinitelyBlocked+s.usersSilentlyBroken,'users at risk',(s.usersDefinitelyBlocked+s.usersSilentlyBroken)?'bad':'ok')}</div>`;
 
   // ---- The technician action report: what breaks, for whom, and the fix ----
   html+=`<h2>What to fix before you enforce</h2>`;
@@ -385,7 +389,7 @@ function render(r){
     html+=`<div class="card" style="border-left:4px solid var(--ok)"><p style="margin:0">Nothing to action — no report-only policy would block, silently break, or prompt any sign-in in this window.</p></div>`;
   }
   for(const e of r.report){
-    const worst=e.worstSeverity;const bcls=worst==='prompt'?'var(--orange)':'var(--bad)';
+    const worst=e.worstSeverity;const bcls=(worst==='prompt'||worst==='verify')?'var(--orange)':'var(--bad)';
     html+=`<div class="card" style="border-left:4px solid ${bcls}">
       <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:baseline">
         <b style="color:var(--blue);font-size:15px">${esc(e.policyName)}</b>
@@ -406,13 +410,13 @@ function render(r){
   }
 
   html+=`<h2>Every report-only policy — safe to enforce?</h2><div class="card"><table><thead><tr>
-    <th>Policy</th><th>Grant</th><th>Blocks</th><th>Silent</th><th>Prompts</th><th>Users</th><th>Verdict</th></tr></thead><tbody>`;
-  for(const p of r.byPolicy){const v=p.verdict;const cls=v==='SAFE'?'safe':v==='FRICTION'?'challenge':'block';
-    const label=v==='SAFE'?'Safe to enforce':v==='IMPACT'?'Would block':v==='SILENT'?'Silent break risk':'Adds friction';
+    <th>Policy</th><th>Grant</th><th>Blocks</th><th>Silent</th><th>Prompts</th><th>Verify</th><th>Users</th><th>Verdict</th></tr></thead><tbody>`;
+  for(const p of r.byPolicy){const v=p.verdict;const cls=v==='SAFE'?'safe':(v==='FRICTION'||v==='VERIFY')?'challenge':'block';
+    const label=v==='SAFE'?'Safe to enforce':v==='IMPACT'?'Would block':v==='SILENT'?'Silent break risk':v==='VERIFY'?'Verify (likely false +ve)':'Adds friction';
     html+=`<tr><td><b>${esc(p.policyName)}</b></td><td class="muted">${esc(p.grant)}</td>
-      <td>${p.definiteBlocks||''}</td><td>${p.silentBreaks||''}</td><td>${p.prompts||''}</td><td>${p.impactedUsers||''}</td>
+      <td>${p.definiteBlocks||''}</td><td>${p.silentBreaks||''}</td><td>${p.prompts||''}</td><td>${p.verifyFlags||''}</td><td>${p.impactedUsers||''}</td>
       <td><span class="pill ${cls}">${label}</span></td></tr>`;}
-  if(!r.byPolicy.length)html+=`<tr><td colspan="7" class="muted">No report-only policies found.</td></tr>`;
+  if(!r.byPolicy.length)html+=`<tr><td colspan="8" class="muted">No report-only policies found.</td></tr>`;
   html+=`</tbody></table></div>`;
   if(r.legacyAuth.totalBlockedSignIns){
     html+=`<h2>Legacy authentication exposure</h2><div class="card" style="border-left:4px solid var(--bad)">

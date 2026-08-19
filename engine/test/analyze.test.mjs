@@ -86,44 +86,72 @@ test('shared fixtures classify into definite/silent/prompt', () => {
   assert.equal(r.summary.prompts, 1); // si-5 interactive MFA interruption
 });
 
-// A non-interactive (background) sign-in that gets interrupted = SILENT breakage.
-const silentPolicies = [
-  {
-    id: 'pol-mfa',
-    displayName: 'Require MFA for all users',
-    state: 'enabledForReportingButNotEnforced',
-    grantControls: { operator: 'OR', builtInControls: ['mfa'] },
-  },
-];
-const silentSignIns = [
-  {
+const mfaPolicy = {
+  id: 'pol-mfa',
+  displayName: 'Require MFA for all users',
+  state: 'enabledForReportingButNotEnforced',
+  grantControls: { operator: 'OR', builtInControls: ['mfa'] },
+};
+
+// A non-interactive (background) sign-in that gets INTERRUPTED (MFA step-up) is a
+// likely report-only FALSE POSITIVE — the refresh token already carries the claim.
+test('non-interactive MFA interruption is VERIFY (likely false positive), not a block', () => {
+  const si = [{
     id: 'bg-1',
     createdDateTime: '2026-07-22T02:00:00Z',
     userPrincipalName: 'adrian@dcae.ie',
     userDisplayName: 'Adrian',
     appDisplayName: 'OneDrive SyncEngine',
     clientAppUsed: 'Mobile Apps and Desktop clients',
-    isInteractive: false, // background token refresh — nobody at the keyboard
+    isInteractive: false, // background token refresh — rides an already-MFA'd token
     deviceDetail: { operatingSystem: 'Windows', displayName: 'ADRIAN-LT' },
     status: { errorCode: 0 },
     appliedConditionalAccessPolicies: [
       { id: 'pol-mfa', displayName: 'Require MFA for all users', enforcedGrantControls: ['Mfa'], result: 'reportOnlyInterrupted' },
     ],
-  },
-];
-
-test('non-interactive interruption becomes a SILENT break, not a prompt', () => {
-  const r = analyze(silentPolicies, silentSignIns);
-  assert.equal(r.summary.silentBreaks, 1);
-  assert.equal(r.summary.prompts, 0);
+  }];
+  const r = analyze([mfaPolicy], si);
+  assert.equal(r.summary.verifyFlags, 1);
+  assert.equal(r.summary.silentBreaks, 0);
   assert.equal(r.summary.definiteBlocks, 0);
+  assert.equal(r.summary.prompts, 0);
   const f = r.findings[0];
-  assert.equal(f.severity, 'silent');
-  assert.equal(f.nonInteractive, true);
-  // verdict must escalate to HOLD for silent breakage
+  assert.equal(f.severity, 'verify');
+  // NOT a HOLD — verify + prompt only means REVIEW
+  assert.match(r.summary.verdict, /^REVIEW/);
+  // remediation must explain it's likely a false positive
+  assert.match(f.remediation, /false positive/i);
+});
+
+// A non-interactive sign-in that would FAIL (denied, e.g. blocked legacy auth) is a
+// genuine SILENT break — the background service stops with no prompt to anyone.
+test('non-interactive FAILURE is a SILENT break and forces HOLD', () => {
+  const pol = [{
+    id: 'pol-legacy',
+    displayName: 'Block legacy authentication',
+    state: 'enabledForReportingButNotEnforced',
+    grantControls: { operator: 'OR', builtInControls: ['block'] },
+  }];
+  const si = [{
+    id: 'bg-2',
+    createdDateTime: '2026-07-22T03:00:00Z',
+    userPrincipalName: 'scanner@client.ie',
+    userDisplayName: 'Warehouse Scanner',
+    appDisplayName: 'Office 365 Exchange Online',
+    clientAppUsed: 'SMTP',
+    isInteractive: false,
+    deviceDetail: { operatingSystem: 'Windows' },
+    status: { errorCode: 0 },
+    appliedConditionalAccessPolicies: [
+      { id: 'pol-legacy', displayName: 'Block legacy authentication', enforcedGrantControls: ['Block'], result: 'reportOnlyFailure' },
+    ],
+  }];
+  const r = analyze(pol, si);
+  assert.equal(r.summary.silentBreaks, 1);
+  assert.equal(r.summary.verifyFlags, 0);
+  assert.equal(r.findings[0].severity, 'silent');
   assert.match(r.summary.verdict, /^HOLD/);
-  // remediation should call out the silent/background nature
-  assert.match(f.remediation, /silent|background/i);
+  assert.match(r.findings[0].remediation, /legacy|silent|background/i);
 });
 
 test('technician report emits per-policy, per-user action lines', () => {
@@ -131,46 +159,29 @@ test('technician report emits per-policy, per-user action lines', () => {
   assert.ok(Array.isArray(r.report) && r.report.length > 0);
   const mfa = r.report.find((e) => e.policyId === 'pol-require-mfa');
   assert.ok(mfa, 'expected the MFA policy in the report');
-  // Liam is a definite block under require-mfa (si-2 reportOnlyFailure)
+  // Liam is a definite block under require-mfa (si-2 reportOnlyFailure, interactive)
   const liam = mfa.users.find((u) => u.user === 'liam@client.ie');
   assert.equal(liam.severity, 'definite');
   assert.match(liam.line, /BLOCKED/);
   assert.match(liam.line, /Fix:/);
-  // headline summarises the blast radius
   assert.match(mfa.headline, /Enabling "Require MFA for all users"/);
 });
 
-test('an interactive-only policy yields REVIEW, not HOLD', () => {
-  const promptOnly = analyze(
-    [silentPolicies[0]],
-    [{ ...silentSignIns[0], id: 'ix-1', isInteractive: true }]
-  );
-  assert.equal(promptOnly.summary.prompts, 1);
-  assert.equal(promptOnly.summary.silentBreaks, 0);
-  assert.match(promptOnly.summary.verdict, /^REVIEW/);
-});
-
-test('a compliant-device interruption is silent even when interactive (unfixable at prompt)', () => {
-  const pol = [{
-    id: 'pol-cd',
-    displayName: 'Require compliant device',
-    state: 'enabledForReportingButNotEnforced',
-    grantControls: { operator: 'OR', builtInControls: ['compliantDevice'] },
-  }];
-  const si = [{
-    id: 'cd-1',
-    createdDateTime: '2026-07-22T10:00:00Z',
+test('an interactive MFA interruption yields a PROMPT and REVIEW', () => {
+  const r = analyze([mfaPolicy], [{
+    id: 'ix-1',
+    createdDateTime: '2026-07-22T09:00:00Z',
     userPrincipalName: 'sara@client.ie',
     appDisplayName: 'SharePoint',
     clientAppUsed: 'Browser',
     isInteractive: true,
-    deviceDetail: { operatingSystem: 'Windows', displayName: 'SARA-PC', isCompliant: false },
     status: { errorCode: 0 },
     appliedConditionalAccessPolicies: [
-      { id: 'pol-cd', displayName: 'Require compliant device', enforcedGrantControls: ['CompliantDevice'], result: 'reportOnlyInterrupted' },
+      { id: 'pol-mfa', displayName: 'Require MFA for all users', enforcedGrantControls: ['Mfa'], result: 'reportOnlyInterrupted' },
     ],
-  }];
-  const r = analyze(pol, si);
-  assert.equal(r.findings[0].severity, 'silent');
-  assert.match(r.findings[0].remediation, /Intune|compliant/i);
+  }]);
+  assert.equal(r.summary.prompts, 1);
+  assert.equal(r.summary.verifyFlags, 0);
+  assert.equal(r.summary.silentBreaks, 0);
+  assert.match(r.summary.verdict, /^REVIEW/);
 });
