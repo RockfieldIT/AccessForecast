@@ -37,12 +37,13 @@ export function getPolicies(token) {
 
 export async function getSignIns(token, days = 7) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
+  const BETA = 'https://graph.microsoft.com/beta';
   const types = ['interactiveUser', 'nonInteractiveUser', 'servicePrincipal'];
   const all = [];
   const errors = [];
   for (const t of types) {
     const filter = `createdDateTime ge ${since} and signInEventTypes/any(x:x eq '${t}')`;
-    const url = `${GRAPH}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
+    const url = `${BETA}/auditLogs/signIns?$filter=${encodeURIComponent(filter)}&$top=1000`;
     try { all.push(...(await getAll(url, token))); }
     catch (e) { errors.push(`${t}: ${e.message}`); }
   }
