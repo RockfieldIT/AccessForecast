@@ -394,9 +394,10 @@ $('#demo').onclick=()=>render(analyze(DEMO.policies,DEMO.signIns));
 
 /* ============================================================
    Hosted (app-only backend) — the default, self-serve path.
-   Calls /api/getTenants then /api/getReportOnlyImpact and renders
-   the compact report the backend already computed. No sign-in needed
-   (the Static Web App has already authenticated the Rockfield user).
+   Starts an async report job then polls its status directly against
+   the Function App's own host (bypasses the Static Web App's own
+   non-configurable proxy timeout). No sign-in needed (the Static Web
+   App has already authenticated the Rockfield user for the start call).
    ============================================================ */
 function hostStatus(msg,kind){const el=$('#hostStatus');el.className='status show'+(kind?' '+kind:'');el.innerHTML=msg;}
 async function loadTenants(){
@@ -418,19 +419,32 @@ async function runHosted(){
   const q=new URLSearchParams({tenantId,days});if(user)q.set('user',user);
   $('#hostRun').disabled=true;
   const scope=user?`${user}`:'the whole tenant';
-  hostStatus(`<span class="spin"></span>Reading live sign-ins for ${esc(scope)} over ${days} day(s)… a whole-tenant scan can take a minute or two.`);
+  hostStatus(`<span class="spin"></span>Starting report for ${esc(scope)} over ${days} day(s)…`);
   try{
-    const res=await fetch('/api/getReportOnlyImpact?'+q.toString());
-    const text=await res.text();
-    let j;try{j=JSON.parse(text);}catch{
-      // The 45s platform timeout returns an HTML page, not JSON.
-      throw new Error(res.status>=500||/timed?\s*out|<!--/i.test(text)
-        ? 'The backend hit its 45-second limit. Narrow to a single user or a shorter window and try again.'
-        : 'Unexpected response from the backend ('+res.status+').');
+    // Async pattern: start the job (instant), then poll its status directly against
+    // the Function App's own host (bypassing the Static Web App's proxy, which has
+    // its own non-configurable request timeout separate from the Function's own).
+    const startRes=await fetch('/api/startReportOnlyImpact?'+q.toString());
+    if(!startRes.ok)throw new Error('Could not start the report ('+startRes.status+').');
+    const job=await startRes.json();
+    if(!job.statusQueryGetUri)throw new Error('Backend did not return a status URL — check the async deploy.');
+    const startedAt=Date.now();
+    let result=null;
+    while(true){
+      await new Promise(r=>setTimeout(r,2500));
+      const elapsed=Math.round((Date.now()-startedAt)/1000);
+      hostStatus(`<span class="spin"></span>Reading live sign-ins for ${esc(scope)} over ${days} day(s)… ${elapsed}s elapsed. A whole-tenant scan can take a few minutes.`);
+      const pollRes=await fetch(job.statusQueryGetUri);
+      if(!pollRes.ok)throw new Error('Lost track of the report job ('+pollRes.status+'). If this is a CORS error, the Function App needs this site\'s origin added under CORS.');
+      const status=await pollRes.json();
+      if(status.runtimeStatus==='Completed'){result=status.output;break;}
+      if(status.runtimeStatus==='Failed')throw new Error((status.output&&status.output.error)||status.output||'Report failed on the backend.');
+      if(status.runtimeStatus==='Terminated'||status.runtimeStatus==='Canceled')throw new Error('Report job was terminated.');
+      if(elapsed>600)throw new Error('Report is taking longer than 10 minutes — something may be stuck. Try narrowing the window or a single user.');
+      // Pending / Running -> keep polling
     }
-    if(!res.ok||j.error)throw new Error(j.error||('Backend error '+res.status));
-    render(j); // the API payload matches render()'s shape (summary/report/byPolicy/legacyAuth)
-    hostStatus(`Done — ${j.signInsAnalyzed} sign-in(s) analysed for ${esc(scope)} over ${days} day(s).`,'ok');
+    render(result); // matches render()'s shape (summary/report/byPolicy/legacyAuth)
+    hostStatus(`Done — ${result.signInsAnalyzed} sign-in(s) analysed for ${esc(scope)} over ${days} day(s).`,'ok');
   }catch(e){hostStatus('Report failed: '+esc(e.message),'err');}
   finally{$('#hostRun').disabled=false;}
 }
