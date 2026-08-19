@@ -91,12 +91,37 @@
     action that would start being <strong>blocked</strong> the moment you switch those policies to <em>On</em>.</p>
 
     <div class="tabs">
-      <button id="tab-live" class="active">Connect to tenant</button>
+      <button id="tab-host" class="active">Client report</button>
+      <button id="tab-live">Advanced: direct connect</button>
       <button id="tab-upload">Upload Graph export</button>
     </div>
 
+    <!-- HOSTED (app-only backend) -->
+    <div id="pane-host">
+      <div class="row">
+        <label class="fld">Client tenant
+          <select id="hostTenant" style="min-width:280px"><option value="">Loading clients…</option></select>
+        </label>
+        <label class="fld">User (optional — leave blank for whole tenant)
+          <input type="text" id="hostUser" placeholder="adrian@dcae.ie" autocomplete="off">
+        </label>
+        <label class="fld">Window
+          <select id="hostDays">
+            <option value="1">Last 1 day</option>
+            <option value="3">Last 3 days</option>
+            <option value="5" selected>Last 5 days</option>
+            <option value="7">Last 7 days</option>
+          </select>
+        </label>
+        <button class="btn-primary" id="hostRun">Run report</button>
+      </div>
+      <div class="status" id="hostStatus"></div>
+      <p class="muted" style="margin:8px 0 0;font-size:12.5px">Reads live data through the Rockfield backend — no per-tenant sign-in needed.
+      A whole-tenant scan over a long window can take a couple of minutes; if it ever times out, scope to a single user or a shorter window.</p>
+    </div>
+
     <!-- LIVE CONNECT -->
-    <div id="pane-live">
+    <div id="pane-live" class="hidden">
       <div class="row">
         <label class="fld">App (client) ID
           <input type="text" id="clientId" placeholder="your app registration's client ID" autocomplete="off">
@@ -357,12 +382,60 @@ $('#connect').onclick=connect;
 let raw={policies:null,signIns:null};
 function pickArray(json){if(Array.isArray(json))return json;if(json&&Array.isArray(json.value))return json.value;return [];}
 async function readFile(input){const f=input.files[0];if(!f)return null;return pickArray(JSON.parse(await f.text()));}
-$('#tab-live').onclick=()=>{$('#tab-live').classList.add('active');$('#tab-upload').classList.remove('active');$('#pane-live').classList.remove('hidden');$('#pane-upload').classList.add('hidden');};
-$('#tab-upload').onclick=()=>{$('#tab-upload').classList.add('active');$('#tab-live').classList.remove('active');$('#pane-upload').classList.remove('hidden');$('#pane-live').classList.add('hidden');};
+const PANES={'tab-host':'pane-host','tab-live':'pane-live','tab-upload':'pane-upload'};
+function showTab(id){for(const [t,p] of Object.entries(PANES)){const on=t===id;$('#'+t).classList.toggle('active',on);$('#'+p).classList.toggle('hidden',!on);}}
+$('#tab-host').onclick=()=>showTab('tab-host');
+$('#tab-live').onclick=()=>showTab('tab-live');
+$('#tab-upload').onclick=()=>showTab('tab-upload');
 $('#file-pol').onchange=async e=>{raw.policies=await readFile(e.target);$('#drop-pol').classList.toggle('set',!!raw.policies);};
 $('#file-sign').onchange=async e=>{raw.signIns=await readFile(e.target);$('#drop-sign').classList.toggle('set',!!raw.signIns);};
 $('#run').onclick=()=>{if(!raw.policies||!raw.signIns){alert('Add both the policies export and the sign-in logs export.');return;}render(analyze(raw.policies,raw.signIns));};
 $('#demo').onclick=()=>render(analyze(DEMO.policies,DEMO.signIns));
+
+/* ============================================================
+   Hosted (app-only backend) — the default, self-serve path.
+   Calls /api/getTenants then /api/getReportOnlyImpact and renders
+   the compact report the backend already computed. No sign-in needed
+   (the Static Web App has already authenticated the Rockfield user).
+   ============================================================ */
+function hostStatus(msg,kind){const el=$('#hostStatus');el.className='status show'+(kind?' '+kind:'');el.innerHTML=msg;}
+async function loadTenants(){
+  const sel=$('#hostTenant');
+  try{
+    const res=await fetch('/api/getTenants');
+    if(!res.ok)throw new Error(`getTenants ${res.status}`);
+    const j=await res.json();
+    const tenants=(j.tenants||[]).slice().sort((a,b)=>String(a.name||a.id).localeCompare(String(b.name||b.id)));
+    if(!tenants.length){sel.innerHTML='<option value="">No clients discovered</option>';return;}
+    sel.innerHTML=tenants.map(t=>`<option value="${esc(t.id)}">${esc(t.name||t.id)}</option>`).join('');
+  }catch(e){sel.innerHTML='<option value="">Could not load clients</option>';hostStatus('Couldn\'t load the client list: '+esc(e.message)+'. Make sure you\'re signed in.','err');}
+}
+async function runHosted(){
+  const tenantId=$('#hostTenant').value;
+  const user=$('#hostUser').value.trim();
+  const days=$('#hostDays').value;
+  if(!tenantId){hostStatus('Pick a client tenant first.','err');return;}
+  const q=new URLSearchParams({tenantId,days});if(user)q.set('user',user);
+  $('#hostRun').disabled=true;
+  const scope=user?`${user}`:'the whole tenant';
+  hostStatus(`<span class="spin"></span>Reading live sign-ins for ${esc(scope)} over ${days} day(s)… a whole-tenant scan can take a minute or two.`);
+  try{
+    const res=await fetch('/api/getReportOnlyImpact?'+q.toString());
+    const text=await res.text();
+    let j;try{j=JSON.parse(text);}catch{
+      // The 45s platform timeout returns an HTML page, not JSON.
+      throw new Error(res.status>=500||/timed?\s*out|<!--/i.test(text)
+        ? 'The backend hit its 45-second limit. Narrow to a single user or a shorter window and try again.'
+        : 'Unexpected response from the backend ('+res.status+').');
+    }
+    if(!res.ok||j.error)throw new Error(j.error||('Backend error '+res.status));
+    render(j); // the API payload matches render()'s shape (summary/report/byPolicy/legacyAuth)
+    hostStatus(`Done — ${j.signInsAnalyzed} sign-in(s) analysed for ${esc(scope)} over ${days} day(s).`,'ok');
+  }catch(e){hostStatus('Report failed: '+esc(e.message),'err');}
+  finally{$('#hostRun').disabled=false;}
+}
+$('#hostRun').onclick=runHosted;
+loadTenants();
 
 /* ============================================================
    Render
@@ -424,30 +497,38 @@ function render(r){
       (${r.legacyAuth.protocols.map(p=>`<span class="tag legacy">${esc(p)}</span>`).join('')}). These break silently — the user gets a password
       failure, not a prompt. Confirm each account has no dependency (old Outlook profiles, scanners, scripts, IMAP/POP) before enforcing.</p></div>`;
   }
-  html+=section('Users who would be blocked',r.byUser.filter(u=>u.blocked),['user','blocked','challenged','apps','policies'],
-    u=>`<tr><td><b>${esc(u.user)}</b></td><td>${u.blocked}</td><td>${u.challenged||''}</td>
-      <td>${u.apps.slice(0,4).map(a=>`<span class="tag">${esc(a)}</span>`).join('')}${u.apps.length>4?` +${u.apps.length-4}`:''}</td>
-      <td>${u.policies.map(p=>`<span class="tag">${esc(p)}</span>`).join('')}</td></tr>`,'No users blocked.');
-  html+=section('Apps / resources affected',r.byApp,['app','blocked','challenged','users'],
-    a=>`<tr><td><b>${esc(a.app)}</b></td><td>${a.blocked||''}</td><td>${a.challenged||''}</td><td>${a.userCount}</td></tr>`,'No apps affected.');
-  if(r.byDevice.length)
-    html+=section('Devices affected',r.byDevice,['device','blocked','users'],
-      d=>`<tr><td><b>${esc(d.device)}</b></td><td>${d.blocked||''}</td><td>${d.userCount}</td></tr>`,'');
-  html+=`<h2>Every impacted sign-in <button class="btn-orange" id="csv" style="float:right;padding:6px 12px;font-size:13px">Export CSV</button></h2>
-    <div class="toolbar"><input type="search" id="q" placeholder="Filter user, app, policy, protocol…"><span class="muted" id="count"></span></div>
-    <div class="card" style="padding:0;overflow:auto"><table id="detail"><thead><tr>
-      <th>When</th><th>User</th><th>App</th><th>Client</th><th>Device</th><th>Policy</th><th>Impact</th></tr></thead><tbody></tbody></table></div>`;
+  // The sign-in-level detail below only exists for the in-browser engine (direct
+  // connect / upload). The hosted backend returns a compact payload (no raw findings),
+  // so these sections are skipped there — the report + policy table above are the deliverable.
+  const hasDetail=Array.isArray(r.findings);
+  if(hasDetail){
+    html+=section('Users who would be blocked',r.byUser.filter(u=>u.blocked),['user','blocked','challenged','apps','policies'],
+      u=>`<tr><td><b>${esc(u.user)}</b></td><td>${u.blocked}</td><td>${u.challenged||''}</td>
+        <td>${u.apps.slice(0,4).map(a=>`<span class="tag">${esc(a)}</span>`).join('')}${u.apps.length>4?` +${u.apps.length-4}`:''}</td>
+        <td>${u.policies.map(p=>`<span class="tag">${esc(p)}</span>`).join('')}</td></tr>`,'No users blocked.');
+    html+=section('Apps / resources affected',r.byApp,['app','blocked','challenged','users'],
+      a=>`<tr><td><b>${esc(a.app)}</b></td><td>${a.blocked||''}</td><td>${a.challenged||''}</td><td>${a.userCount}</td></tr>`,'No apps affected.');
+    if(r.byDevice.length)
+      html+=section('Devices affected',r.byDevice,['device','blocked','users'],
+        d=>`<tr><td><b>${esc(d.device)}</b></td><td>${d.blocked||''}</td><td>${d.userCount}</td></tr>`,'');
+    html+=`<h2>Every impacted sign-in <button class="btn-orange" id="csv" style="float:right;padding:6px 12px;font-size:13px">Export CSV</button></h2>
+      <div class="toolbar"><input type="search" id="q" placeholder="Filter user, app, policy, protocol…"><span class="muted" id="count"></span></div>
+      <div class="card" style="padding:0;overflow:auto"><table id="detail"><thead><tr>
+        <th>When</th><th>User</th><th>App</th><th>Client</th><th>Device</th><th>Policy</th><th>Impact</th></tr></thead><tbody></tbody></table></div>`;
+  }
   $('#report').innerHTML=html;$('#report').classList.remove('hidden');
-  const rows=r.findings.slice().sort((a,b)=>(a.when<b.when?1:-1));const tb=$('#detail tbody');
-  function draw(filter=''){const f=filter.toLowerCase();
-    const shown=rows.filter(x=>!f||[x.userPrincipalName,x.app,x.policyName,x.clientApp,x.location,x.device].join(' ').toLowerCase().includes(f));
-    tb.innerHTML=shown.map(x=>`<tr><td class="muted" style="white-space:nowrap">${fmt(x.when)}</td>
-      <td>${esc(x.userPrincipalName)}</td><td>${esc(x.app)}</td>
-      <td>${x.legacyAuth?`<span class="tag legacy">${esc(x.clientApp)}</span>`:esc(x.clientApp)}</td>
-      <td class="muted">${esc(x.device||'')}${x.deviceCompliant===false?' <span class="tag">non-compliant</span>':''}</td>
-      <td>${esc(x.policyName)}</td><td>${sevPill(x.severity)}${x.nonInteractive?' <span class="tag legacy">bg</span>':''}</td></tr>`).join('');
-    $('#count').textContent=`${shown.length} of ${rows.length} shown`;}
-  draw();$('#q').oninput=e=>draw(e.target.value);$('#csv').onclick=()=>exportCsv(rows);
+  if(hasDetail){
+    const rows=r.findings.slice().sort((a,b)=>(a.when<b.when?1:-1));const tb=$('#detail tbody');
+    function draw(filter=''){const f=filter.toLowerCase();
+      const shown=rows.filter(x=>!f||[x.userPrincipalName,x.app,x.policyName,x.clientApp,x.location,x.device].join(' ').toLowerCase().includes(f));
+      tb.innerHTML=shown.map(x=>`<tr><td class="muted" style="white-space:nowrap">${fmt(x.when)}</td>
+        <td>${esc(x.userPrincipalName)}</td><td>${esc(x.app)}</td>
+        <td>${x.legacyAuth?`<span class="tag legacy">${esc(x.clientApp)}</span>`:esc(x.clientApp)}</td>
+        <td class="muted">${esc(x.device||'')}${x.deviceCompliant===false?' <span class="tag">non-compliant</span>':''}</td>
+        <td>${esc(x.policyName)}</td><td>${sevPill(x.severity)}${x.nonInteractive?' <span class="tag legacy">bg</span>':''}</td></tr>`).join('');
+      $('#count').textContent=`${shown.length} of ${rows.length} shown`;}
+    draw();$('#q').oninput=e=>draw(e.target.value);$('#csv').onclick=()=>exportCsv(rows);
+  }
   $('#report').scrollIntoView({behavior:'smooth'});
 }
 function tile(n,l,cls){return `<div class="tile ${cls}"><div class="n">${n}</div><div class="l">${l}</div></div>`;}
