@@ -71,12 +71,6 @@ export async function fetchTenantData(tenantId, days = 7, user = null) {
   return { policies, signIns };
 }
 
-export async function fetchTenantData(tenantId, days = 7) {
-  const token = await getAppToken(tenantId);
-  const [policies, signIns] = await Promise.all([getPolicies(token), getSignIns(token, days)]);
-  return { policies, signIns };
-}
-
 export function getConfiguredTenants() {
   try { return JSON.parse(process.env.AF_TENANTS || '[]'); } catch { return []; }
 }
