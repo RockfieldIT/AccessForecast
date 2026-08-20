@@ -102,8 +102,12 @@
         <label class="fld">Client tenant
           <select id="hostTenant" style="min-width:280px"><option value="">Loading clients…</option></select>
         </label>
-        <label class="fld">User (optional — leave blank for whole tenant)
-          <input type="text" id="hostUser" placeholder="adrian@dcae.ie" autocomplete="off">
+        <label class="fld">Target
+          <select id="hostMode" style="min-width:170px">
+            <option value="tenant" selected>Whole tenant</option>
+            <option value="users">Specific user(s)</option>
+            <option value="group">Pilot group</option>
+          </select>
         </label>
         <label class="fld">Window
           <select id="hostDays">
@@ -115,9 +119,28 @@
         </label>
         <button class="btn-primary" id="hostRun">Run report</button>
       </div>
+
+      <!-- SPECIFIC USER(S) PICKER -->
+      <div id="hostUsersPicker" class="hidden" style="margin-top:10px;position:relative;max-width:380px">
+        <label class="fld">Add user(s)
+          <input type="text" id="hostUserSearch" placeholder="Type a name or email…" autocomplete="off">
+        </label>
+        <div id="hostUserSuggest" class="card" style="display:none;position:absolute;z-index:5;left:0;right:0;padding:4px;margin-top:2px;max-height:220px;overflow:auto"></div>
+        <div id="hostUserChips" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px"></div>
+      </div>
+
+      <!-- PILOT GROUP PICKER -->
+      <div id="hostGroupPicker" class="hidden" style="margin-top:10px;position:relative;max-width:380px">
+        <label class="fld">Pilot group
+          <input type="text" id="hostGroupSearch" placeholder="Type a group name…" autocomplete="off">
+        </label>
+        <div id="hostGroupSuggest" class="card" style="display:none;position:absolute;z-index:5;left:0;right:0;padding:4px;margin-top:2px;max-height:220px;overflow:auto"></div>
+        <div id="hostGroupSelected" style="margin-top:8px"></div>
+      </div>
+
       <div class="status" id="hostStatus"></div>
       <p class="muted" style="margin:8px 0 0;font-size:12.5px">Reads live data through the Rockfield backend — no per-tenant sign-in needed.
-      A whole-tenant scan over a long window can take a couple of minutes; if it ever times out, scope to a single user or a shorter window.</p>
+      A whole-tenant scan over a long window can take a couple of minutes; if it ever times out, scope to fewer users or a shorter window.</p>
     </div>
 
     <!-- LIVE CONNECT -->
@@ -411,14 +434,90 @@ async function loadTenants(){
     sel.innerHTML=tenants.map(t=>`<option value="${esc(t.id)}">${esc(t.name||t.id)}</option>`).join('');
   }catch(e){sel.innerHTML='<option value="">Could not load clients</option>';hostStatus('Couldn\'t load the client list: '+esc(e.message)+'. Make sure you\'re signed in.','err');}
 }
+
+/* ---- Target picker: whole tenant / specific user(s) / pilot group ----
+   Both the user and group pickers are search-as-you-type against the client
+   tenant's directory (>=2 chars, debounced) so nothing has to page through a
+   full tenant's user list client-side. */
+let hostUsers=[]; // [{id,displayName,userPrincipalName}]
+let hostGroup=null; // {id,displayName} | null
+function debounce(fn,ms){let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};}
+
+function renderUserChips(){
+  $('#hostUserChips').innerHTML=hostUsers.map((u,i)=>
+    `<span class="tag" style="font-size:12.5px;padding:4px 8px">${esc(u.displayName||u.userPrincipalName)}
+      <span class="muted">(${esc(u.userPrincipalName)})</span>
+      <a href="#" data-i="${i}" class="rmUser" style="margin-left:6px;color:var(--bad);text-decoration:none">✕</a></span>`).join('');
+  $('#hostUserChips').querySelectorAll('.rmUser').forEach(a=>a.onclick=e=>{e.preventDefault();hostUsers.splice(+a.dataset.i,1);renderUserChips();});
+}
+function renderGroupSelected(){
+  const el=$('#hostGroupSelected');
+  if(!hostGroup){el.innerHTML='';return;}
+  el.innerHTML=`<span class="tag" style="font-size:12.5px;padding:4px 8px">${esc(hostGroup.displayName)}
+    <a href="#" id="rmGroup" style="margin-left:6px;color:var(--bad);text-decoration:none">✕</a></span>`;
+  $('#rmGroup').onclick=e=>{e.preventDefault();hostGroup=null;renderGroupSelected();};
+}
+const searchUsers=debounce(async()=>{
+  const tenantId=$('#hostTenant').value;const q=$('#hostUserSearch').value.trim();
+  const box=$('#hostUserSuggest');
+  if(!tenantId||q.length<2){box.style.display='none';box.innerHTML='';return;}
+  try{
+    const res=await fetch(`/api/getUsers?tenantId=${encodeURIComponent(tenantId)}&q=${encodeURIComponent(q)}`);
+    const j=await res.json();const users=(j.users||[]).filter(u=>!hostUsers.some(h=>h.id===u.id));
+    if(!users.length){box.style.display='none';box.innerHTML='';return;}
+    box.innerHTML=users.map(u=>`<div class="userHit" data-json="${esc(JSON.stringify(u))}" style="padding:6px 8px;cursor:pointer;border-radius:6px">
+      <b>${esc(u.displayName||u.userPrincipalName)}</b><br><span class="muted" style="font-size:12px">${esc(u.userPrincipalName)}</span></div>`).join('');
+    box.style.display='block';
+    box.querySelectorAll('.userHit').forEach(el=>{
+      el.onmouseenter=()=>el.style.background='#f4f6f8';el.onmouseleave=()=>el.style.background='';
+      el.onclick=()=>{hostUsers.push(JSON.parse(el.dataset.json));renderUserChips();$('#hostUserSearch').value='';box.style.display='none';box.innerHTML='';};
+    });
+  }catch(e){box.style.display='none';}
+},300);
+const searchGroups=debounce(async()=>{
+  const tenantId=$('#hostTenant').value;const q=$('#hostGroupSearch').value.trim();
+  const box=$('#hostGroupSuggest');
+  if(!tenantId||q.length<2){box.style.display='none';box.innerHTML='';return;}
+  try{
+    const res=await fetch(`/api/getGroups?tenantId=${encodeURIComponent(tenantId)}&q=${encodeURIComponent(q)}`);
+    const j=await res.json();const groups=j.groups||[];
+    if(!groups.length){box.style.display='none';box.innerHTML='';return;}
+    box.innerHTML=groups.map(g=>`<div class="groupHit" data-json="${esc(JSON.stringify(g))}" style="padding:6px 8px;cursor:pointer;border-radius:6px">
+      <b>${esc(g.displayName)}</b>${g.description?`<br><span class="muted" style="font-size:12px">${esc(g.description)}</span>`:''}</div>`).join('');
+    box.style.display='block';
+    box.querySelectorAll('.groupHit').forEach(el=>{
+      el.onmouseenter=()=>el.style.background='#f4f6f8';el.onmouseleave=()=>el.style.background='';
+      el.onclick=()=>{hostGroup=JSON.parse(el.dataset.json);renderGroupSelected();$('#hostGroupSearch').value='';box.style.display='none';box.innerHTML='';};
+    });
+  }catch(e){box.style.display='none';}
+},300);
+$('#hostUserSearch').oninput=searchUsers;
+$('#hostGroupSearch').oninput=searchGroups;
+function updateHostMode(){
+  const mode=$('#hostMode').value;
+  $('#hostUsersPicker').classList.toggle('hidden',mode!=='users');
+  $('#hostGroupPicker').classList.toggle('hidden',mode!=='group');
+}
+$('#hostMode').onchange=updateHostMode;
+updateHostMode();
+
 async function runHosted(){
   const tenantId=$('#hostTenant').value;
-  const user=$('#hostUser').value.trim();
+  const mode=$('#hostMode').value;
   const days=$('#hostDays').value;
   if(!tenantId){hostStatus('Pick a client tenant first.','err');return;}
-  const q=new URLSearchParams({tenantId,days});if(user)q.set('user',user);
+  const q=new URLSearchParams({tenantId,days,mode});
+  let scope='the whole tenant';
+  if(mode==='users'){
+    if(!hostUsers.length){hostStatus('Add at least one user first.','err');return;}
+    q.set('users',hostUsers.map(u=>u.userPrincipalName).join(','));
+    scope=hostUsers.length===1?hostUsers[0].userPrincipalName:`${hostUsers.length} selected users`;
+  }else if(mode==='group'){
+    if(!hostGroup){hostStatus('Pick a pilot group first.','err');return;}
+    q.set('groupId',hostGroup.id);q.set('groupName',hostGroup.displayName);
+    scope=`the "${hostGroup.displayName}" group`;
+  }
   $('#hostRun').disabled=true;
-  const scope=user?`${user}`:'the whole tenant';
   hostStatus(`<span class="spin"></span>Starting report for ${esc(scope)} over ${days} day(s)…`);
   try{
     // Async pattern: start the job (instant), then poll its status directly against
@@ -441,10 +540,10 @@ async function runHosted(){
       if(status.runtimeStatus==='Completed'){result=status.output;break;}
       if(status.runtimeStatus==='Failed')throw new Error((status.output&&status.output.error)||status.output||'Report failed on the backend.');
       if(status.runtimeStatus==='Terminated'||status.runtimeStatus==='Canceled')throw new Error('Report job was terminated.');
-      if(elapsed>600)throw new Error('Report is taking longer than 10 minutes — something may be stuck. Try narrowing the window or a single user.');
+      if(elapsed>600)throw new Error('Report is taking longer than 10 minutes — something may be stuck. Try narrowing the window or the target.');
       // Pending / Running -> keep polling
     }
-    render(result); // matches render()'s shape (summary/report/byPolicy/legacyAuth)
+    render(result); // matches render()'s shape (summary/report/byPolicy/legacyAuth/scope)
     hostStatus(`Done — ${result.signInsAnalyzed} sign-in(s) analysed for ${esc(scope)} over ${days} day(s).`,'ok');
   }catch(e){hostStatus('Report failed: '+esc(e.message),'err');}
   finally{$('#hostRun').disabled=false;}
@@ -462,6 +561,11 @@ function render(r){
   const s=r.summary;const code=s.verdictCode;const ready=code==='READY';const review=code==='REVIEW';let html='';
   const vcls=ready?'ready':review?'':'hold';const vstyle=review?' style="background:var(--orange)"':'';
   const vhead=ready?'✓ READY TO ENFORCE':review?'◐ REVIEW — prompts only, no hard blocks':'⚠ HOLD — review before enforcing';
+  if(r.scope){
+    const modeLabel=r.scope.mode==='group'?'Pilot group':r.scope.mode==='users'?'Specific user(s)':'Whole tenant';
+    html+=`<div class="card" style="border-left:4px solid var(--blue);padding:10px 16px;margin-bottom:12px">
+      <b style="color:var(--blue)">Scope: ${esc(modeLabel)}</b> — ${esc(r.scope.label)}</div>`;
+  }
   html+=`<div class="verdict ${vcls}"${vstyle}>${vhead}
     <small>${esc(s.verdictText)} Window: ${fmt(s.windowStart)} → ${fmt(s.windowEnd)}, ${s.signInsAnalyzed} sign-ins across ${s.reportOnlyPolicies} report-only policies.</small></div>`;
   html+=`<div class="tiles">
