@@ -33,12 +33,12 @@ export async function getAppToken(tenantId) {
 }
 
 /** Page through a Graph collection, concatenating every `value` array. */
-async function getAll(url, token, pageCap = 50) {
+async function getAll(url, token, pageCap = 50, extraHeaders = {}) {
   const out = [];
   let next = url,
     pages = 0;
   while (next && pages < pageCap) {
-    const res = await fetch(next, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(next, { headers: { Authorization: `Bearer ${token}`, ...extraHeaders } });
     if (!res.ok) throw new Error(`Graph ${res.status} on ${next}: ${(await res.text()).slice(0, 300)}`);
     const json = await res.json();
     out.push(...(json.value || []));
@@ -52,18 +52,37 @@ export function getPolicies(token) {
   return getAll(`${GRAPH}/identity/conditionalAccess/policies`, token);
 }
 
+function escOData(s) {
+  return String(s).replace(/'/g, "''");
+}
+
+/**
+ * Build the `userPrincipalName eq '...' or ...` OData clause for scoping sign-ins
+ * to one or more users (used for both "specific user(s)" and "pilot group" modes —
+ * a group is just resolved to its member UPNs first, then filtered the same way).
+ */
+function buildUserClause(users) {
+  if (!users) return '';
+  const list = Array.isArray(users) ? users : [users];
+  const clean = list.map((u) => String(u || '').trim()).filter(Boolean);
+  if (!clean.length) return '';
+  return ' and (' + clean.map((u) => `userPrincipalName eq '${escOData(u)}'`).join(' or ') + ')';
+}
+
 /**
  * All sign-in event types (interactive + non-interactive + service principal),
  * fetched IN PARALLEL with per-type page caps to stay under the Static Web App
  * managed-function 45s limit. `signInEventTypes` exists on BETA only — v1.0 400s.
- * Optionally scope to a single user (keeps big tenants inside the timeout).
+ * Optionally scope to one or more users (keeps big tenants inside the timeout,
+ * and is also how "specific user(s)" and "pilot group" targeting are implemented —
+ * a group is resolved to member UPNs upstream and passed in here as a list).
  * @param {string} token
  * @param {number} days
- * @param {string|null} user  userPrincipalName to scope to (optional)
+ * @param {string|string[]|null} users  userPrincipalName(s) to scope to (optional)
  */
-export async function getSignIns(token, days = 7, user = null) {
+export async function getSignIns(token, days = 7, users = null) {
   const since = new Date(Date.now() - days * 864e5).toISOString();
-  const userClause = user ? ` and userPrincipalName eq '${user.replace(/'/g, "''")}'` : '';
+  const userClause = buildUserClause(users);
   // Page caps bound worst-case work. On the standalone Function App (10-min timeout)
   // these can be generous; on SWA managed functions (45s) keep them low. Override per
   // deployment with AF_MAXPAGES_INTERACTIVE / _NONINTERACTIVE / _SP (each page = up to 1000).
@@ -103,11 +122,12 @@ export async function getSignIns(token, days = 7, user = null) {
  * One-shot: raw Graph data for a tenant.
  * @param {string} tenantId
  * @param {number} days
- * @param {string|null} user  optional single-user scope
+ * @param {string|string[]|null} users  optional user scope (single UPN, or a list —
+ *   a list is how both "specific user(s)" and "pilot group" targeting are implemented)
  */
-export async function fetchTenantData(tenantId, days = 7, user = null) {
+export async function fetchTenantData(tenantId, days = 7, users = null) {
   const token = await getAppToken(tenantId);
-  const [policies, signIns] = await Promise.all([getPolicies(token), getSignIns(token, days, user)]);
+  const [policies, signIns] = await Promise.all([getPolicies(token), getSignIns(token, days, users)]);
   return { policies, signIns };
 }
 
@@ -149,4 +169,52 @@ export async function resolveTenants() {
   const override = getConfiguredTenants();
   if (override.length) return override;
   return discoverTenants();
+}
+
+/**
+ * Search users in a client tenant, for the "specific user(s)" target picker.
+ * Matching startswith(displayName) OR startswith(userPrincipalName) against a
+ * client-tenant token needs the ConsistencyLevel:eventual header (Graph "advanced
+ * query" requirement whenever an `or` spans two different properties in $filter).
+ * @param {string} tenantId
+ * @param {string} q  search text (min 2 chars enforced by the caller/UI)
+ * @param {number} top
+ */
+export async function searchUsers(tenantId, q, top = 15) {
+  const token = await getAppToken(tenantId);
+  const clean = escOData(q);
+  const filter = `startswith(displayName,'${clean}') or startswith(userPrincipalName,'${clean}') or startswith(mail,'${clean}')`;
+  const url = `${GRAPH}/users?$select=id,displayName,userPrincipalName,mail&$filter=${encodeURIComponent(filter)}&$top=${top}&$count=true`;
+  const items = await getAll(url, token, 1, { ConsistencyLevel: 'eventual' });
+  return items.map((u) => ({ id: u.id, displayName: u.displayName || u.userPrincipalName, userPrincipalName: u.userPrincipalName }));
+}
+
+/**
+ * Search security/M365 groups in a client tenant, for the "pilot group" target picker.
+ * @param {string} tenantId
+ * @param {string} q
+ * @param {number} top
+ */
+export async function searchGroups(tenantId, q, top = 15) {
+  const token = await getAppToken(tenantId);
+  const clean = escOData(q);
+  const filter = `startswith(displayName,'${clean}')`;
+  const url = `${GRAPH}/groups?$select=id,displayName,description,securityEnabled,mailEnabled&$filter=${encodeURIComponent(filter)}&$top=${top}&$count=true`;
+  const items = await getAll(url, token, 1, { ConsistencyLevel: 'eventual' });
+  return items.map((g) => ({ id: g.id, displayName: g.displayName, description: g.description || null }));
+}
+
+/**
+ * Resolve a group's members down to a flat list of userPrincipalNames. Only
+ * entries that actually have a userPrincipalName are kept (i.e. users — nested
+ * groups, devices, or service principals that may also be members are skipped),
+ * since the sign-in filter is scoped by userPrincipalName.
+ * @param {string} tenantId
+ * @param {string} groupId
+ */
+export async function getGroupMemberUpns(tenantId, groupId) {
+  const token = await getAppToken(tenantId);
+  const url = `${GRAPH}/groups/${groupId}/members?$select=id,displayName,userPrincipalName&$top=999`;
+  const members = await getAll(url, token, 30);
+  return members.filter((m) => m.userPrincipalName).map((m) => m.userPrincipalName);
 }

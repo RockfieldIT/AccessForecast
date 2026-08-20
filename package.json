@@ -1,6 +1,6 @@
 {
   "name": "rockfield-accessforecast",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Conditional Access enforcement preview — flags what report-only CA policies would block once enforced.",
   "type": "module",
   "private": true,
