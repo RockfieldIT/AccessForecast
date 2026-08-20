@@ -427,15 +427,16 @@ async function runHosted(){
     const startRes=await fetch('/api/startReportOnlyImpact?'+q.toString());
     if(!startRes.ok)throw new Error('Could not start the report ('+startRes.status+').');
     const job=await startRes.json();
-    if(!job.statusQueryGetUri)throw new Error('Backend did not return a status URL — check the async deploy.');
+    if(!job.id)throw new Error('Backend did not return a job id — check the async deploy.');
+    const statusUrl='/api/getReportStatus?instanceId='+encodeURIComponent(job.id);
     const startedAt=Date.now();
     let result=null;
     while(true){
       await new Promise(r=>setTimeout(r,2500));
       const elapsed=Math.round((Date.now()-startedAt)/1000);
       hostStatus(`<span class="spin"></span>Reading live sign-ins for ${esc(scope)} over ${days} day(s)… ${elapsed}s elapsed. A whole-tenant scan can take a few minutes.`);
-      const pollRes=await fetch(job.statusQueryGetUri);
-      if(!pollRes.ok)throw new Error('Lost track of the report job ('+pollRes.status+'). If this is a CORS error, the Function App needs this site\'s origin added under CORS.');
+      const pollRes=await fetch(statusUrl);
+      if(!pollRes.ok)throw new Error('Lost track of the report job ('+pollRes.status+').');
       const status=await pollRes.json();
       if(status.runtimeStatus==='Completed'){result=status.output;break;}
       if(status.runtimeStatus==='Failed')throw new Error((status.output&&status.output.error)||status.output||'Report failed on the backend.');
