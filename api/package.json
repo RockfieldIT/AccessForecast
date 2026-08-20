@@ -1,6 +1,6 @@
 {
   "name": "accessforecast-api",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "type": "module",
   "main": "{getReportOnlyImpact,getEstate,getTenants,reportOnlyImpactAsync,getReportStatus,getUsers,getGroups}/function.mjs",
   "dependencies": {

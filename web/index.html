@@ -106,7 +106,7 @@
           <select id="hostMode" style="min-width:170px">
             <option value="tenant" selected>Whole tenant</option>
             <option value="users">Specific user(s)</option>
-            <option value="group">Pilot group</option>
+            <option value="group">Group</option>
           </select>
         </label>
         <label class="fld">Window
@@ -129,9 +129,9 @@
         <div id="hostUserChips" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:6px"></div>
       </div>
 
-      <!-- PILOT GROUP PICKER -->
+      <!-- GROUP PICKER -->
       <div id="hostGroupPicker" class="hidden" style="margin-top:10px;position:relative;max-width:380px">
-        <label class="fld">Pilot group
+        <label class="fld">Group
           <input type="text" id="hostGroupSearch" placeholder="Type a group name…" autocomplete="off">
         </label>
         <div id="hostGroupSuggest" class="card" style="display:none;position:absolute;z-index:5;left:0;right:0;padding:4px;margin-top:2px;max-height:220px;overflow:auto"></div>
@@ -435,7 +435,7 @@ async function loadTenants(){
   }catch(e){sel.innerHTML='<option value="">Could not load clients</option>';hostStatus('Couldn\'t load the client list: '+esc(e.message)+'. Make sure you\'re signed in.','err');}
 }
 
-/* ---- Target picker: whole tenant / specific user(s) / pilot group ----
+/* ---- Target picker: whole tenant / specific user(s) / group ----
    Both the user and group pickers are search-as-you-type against the client
    tenant's directory (>=2 chars, debounced) so nothing has to page through a
    full tenant's user list client-side. */
@@ -513,7 +513,7 @@ async function runHosted(){
     q.set('users',hostUsers.map(u=>u.userPrincipalName).join(','));
     scope=hostUsers.length===1?hostUsers[0].userPrincipalName:`${hostUsers.length} selected users`;
   }else if(mode==='group'){
-    if(!hostGroup){hostStatus('Pick a pilot group first.','err');return;}
+    if(!hostGroup){hostStatus('Pick a group first.','err');return;}
     q.set('groupId',hostGroup.id);q.set('groupName',hostGroup.displayName);
     scope=`the "${hostGroup.displayName}" group`;
   }
@@ -562,7 +562,7 @@ function render(r){
   const vcls=ready?'ready':review?'':'hold';const vstyle=review?' style="background:var(--orange)"':'';
   const vhead=ready?'✓ READY TO ENFORCE':review?'◐ REVIEW — prompts only, no hard blocks':'⚠ HOLD — review before enforcing';
   if(r.scope){
-    const modeLabel=r.scope.mode==='group'?'Pilot group':r.scope.mode==='users'?'Specific user(s)':'Whole tenant';
+    const modeLabel=r.scope.mode==='group'?'Group':r.scope.mode==='users'?'Specific user(s)':'Whole tenant';
     html+=`<div class="card" style="border-left:4px solid var(--blue);padding:10px 16px;margin-bottom:12px">
       <b style="color:var(--blue)">Scope: ${esc(modeLabel)}</b> — ${esc(r.scope.label)}</div>`;
   }
